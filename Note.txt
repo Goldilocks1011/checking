@@ -1,0 +1,356 @@
+Wishlishhtttt
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Existing Tables (already in your models.py)
+
+accounts — Auth layer. One account per login. Has `role` field needed for master/child routing (Module 3).
+
+users — Portfolio users per account (e.g., "Zerodha account", "5paisa account"). Multiple users can belong to one account. `account_id` FK links to accounts.
+
+user_groups` / `group_members — Groups of users for aggregated views.
+
+transactions — Raw equity trade history (BUY/SELL/BONUS etc.). Source of truth for FIFO engine.
+
+holdings — Current equity positions, computed by FIFO engine from transactions. Updated on every upload.
+
+pnl — Realized equity P&L rows, also FIFO-computed.
+
+intraday — Same-day buy+sell trades, computed from transactions.
+
+fno_transactions — Raw F&O trade history.
+
+fno_open_positions — Snapshot of open F&O contracts, from broker file upload or computed from fno_transactions.
+
+fno_pnl — Realized F&O P&L.
+
+stock_master_mapping — One row per ISIN. Stores canonical NSE ticker, F&O flag, lot size. The central reference for symbol resolution.
+
+user_stock_symbol_mapping — Maps (user_id, broker, raw_symbol) → ISIN. Bridges broker-specific symbols to the canonical master.
+
+unmatched_symbols — Symbols that failed auto-resolution, shown to user for manual linking.
+
+symbol_normalisation — Cache of raw→canonical mappings for fast lookups.
+
+scrip_master_cache — Full 5paisa ScripMaster CSV loaded into DB. Used for ISIN lookup, lot sizes, F&O eligibility, option chain tokens.
+
+corporate_actions — Dividend/split/bonus/merger records per user. Seeded from transactions or NSE API.
+
+ledger_entries — 5paisa ledger rows (funds in/out, charges, bills).
+
+processed_files — Upload history with dedup check. Stores file bytes for re-download.
+
+password_resets — One-time tokens for forgot-password flow.
+
+fo_lot_sizes — Legacy lot size cache by canonical symbol. Partially superseded by scrip_master_cache.
+
+---
+
+ New Tables Required by the Algorithm
+
+---
+
+# `wishlists`
+Stores the user's watchlist for the screener. Auto-populated from holdings; user can add/remove manually.
+
+```sql
+CREATE TABLE wishlists (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    user_id         INT NOT NULL,                        -- FK → users.id
+    symbol          VARCHAR(100) NOT NULL,               -- canonical NSE ticker
+    isin            VARCHAR(20),                         -- FK → stock_master_mapping.isin
+    is_auto_added   BOOLEAN DEFAULT TRUE,                -- FALSE = user manually added
+    is_active       BOOLEAN DEFAULT TRUE,                -- FALSE = user removed it
+    added_at        DATETIME DEFAULT NOW(),
+    updated_at      DATETIME DEFAULT NOW() ON UPDATE NOW(),
+    UNIQUE KEY uq_user_symbol (user_id, symbol)
+);
+-- Used by: Module 1 Steps 1-2
+-- Populated by: auto-sync from holdings on login; manual add/remove by user
+-- Read by: screener pipeline start, dashboard render (Step 10)
+```
+
+---
+
+# `impact_cache`
+Per-symbol, per-day enrichment data fetched from multiple sources (price, seasonal, stddev, IV, news). Cached to avoid re-fetching within the same trading day.
+
+```sql
+CREATE TABLE impact_cache (
+    id                  INT AUTO_INCREMENT PRIMARY KEY,
+    symbol              VARCHAR(100) NOT NULL,
+    cache_date          DATE NOT NULL,                   -- today's date; invalidated next day
+
+    -- Price data (from price_service / 5paisa)
+    spot_price          FLOAT,
+    high_1m             FLOAT,
+    low_1m              FLOAT,
+    high_3m             FLOAT,
+    low_3m              FLOAT,
+    high_6m             FLOAT,
+    low_6m              FLOAT,
+    high_52w            FLOAT,
+    low_52w             FLOAT,
+    pct_from_1m_high    FLOAT,
+    pct_from_1m_low     FLOAT,
+    pct_from_3m_high    FLOAT,
+    pct_from_3m_low     FLOAT,
+
+    -- F&O data (from scrip_master_cache)
+    fo_enabled          BOOLEAN DEFAULT FALSE,
+    lot_size            INT DEFAULT 0,
+    iv_ce               FLOAT,                           -- IV of nearest OTM CE
+    iv_pe               FLOAT,                           -- IV of nearest OTM PE
+    delta_ce            FLOAT,
+    delta_pe            FLOAT,
+    atm_strike          FLOAT,
+    nearest_expiry      DATE,
+    far_expiry          DATE,
+
+    -- Seasonal rank (from seasonal_code module)
+    seasonal_rank       INT,                             -- 1=best, 12=worst month historically
+    seasonal_label      VARCHAR(20),                     -- 'BEST' / 'NEUTRAL' / 'WORST'
+
+    -- Std deviation bands (from mmm_code)
+    stddev_1sigma_upper FLOAT,
+    stddev_1sigma_lower FLOAT,
+    stddev_2sigma_upper FLOAT,
+    stddev_2sigma_lower FLOAT,
+    stddev_band_label   VARCHAR(20),                     -- 'WIDE' / 'NORMAL' / 'TIGHT'
+
+    -- Corp events (from NSE API within 30-day window)
+    corp_event_type     VARCHAR(30),                     -- 'DIVIDEND' / 'RESULTS' / 'SPLIT' / NULL
+    corp_event_date     DATE,
+    corp_event_within_expiry BOOLEAN DEFAULT FALSE,      -- TRUE if event falls before nearest expiry
+
+    -- News sentiment (from StockPulse API)
+    news_score          FLOAT,                           -- -1.0 to +1.0
+    news_label          VARCHAR(20),                     -- 'POSITIVE' / 'NEUTRAL' / 'NEGATIVE'
+    news_fetched_at     DATETIME,
+
+    -- Technical signals (from analysis_module)
+    volume_signal       VARCHAR(20),                     -- 'HIGH' / 'NORMAL' / 'LOW'
+    technical_signal    VARCHAR(30),                     -- 'BULLISH' / 'BEARISH' / 'NEUTRAL'
+    rsi                 FLOAT,
+    roi_1m              FLOAT,                           -- 1-month ROI %
+
+    fetched_at          DATETIME DEFAULT NOW(),
+    UNIQUE KEY uq_symbol_date (symbol, cache_date)
+);
+-- Used by: Module 2 Steps 4-5 (all enrichment sources write here)
+-- Read by: Module 4 Steps 7-9 (suggestion engine), Step 10 (dashboard render)
+-- TTL: one row per symbol per calendar day; re-fetched if cache_date < today
+```
+
+---
+
+# `screener_signals`
+The computed recommendation for each symbol per user per day. Output of the suggestion engine (Module 4). Stored so the dashboard doesn't re-compute on every page load.
+
+```sql
+CREATE TABLE screener_signals (
+    id                      INT AUTO_INCREMENT PRIMARY KEY,
+    user_id                 INT NOT NULL,                -- FK → users.id
+    symbol                  VARCHAR(100) NOT NULL,
+    signal_date             DATE NOT NULL,
+
+    -- Position context (Step 7)
+    has_existing_position   BOOLEAN DEFAULT FALSE,
+    position_type           VARCHAR(10),                 -- 'CE' / 'PE' / 'FUT' / 'EQ' / NULL
+    position_avg_price      FLOAT,
+    position_qty            FLOAT,
+    position_pnl            FLOAT,                       -- real-time PnL in ₹
+    position_pnl_pct        FLOAT,                       -- PnL as %
+    daily_pnl               FLOAT,
+    roi_pct                 FLOAT,
+    yearly_profit_est       FLOAT,
+
+    -- Breakeven (Step 7 loss path)
+    breakeven_price         FLOAT,
+    days_to_expiry          INT,
+    rollover_flag           BOOLEAN DEFAULT FALSE,
+
+    -- Signal output (Steps 7-8)
+    position_signal         VARCHAR(20),                 -- 'SQUARE_OFF' / 'ROLLOVER' / 'CORRECTION' / 'HOLD' / 'FRESH'
+    final_signal            VARCHAR(20),                 -- 'SELL CE' / 'SELL PE' / 'NEUTRAL'
+    signal_reason           TEXT,
+    confidence_score        FLOAT,                       -- 0.0–1.0 composite confidence
+
+    -- Strike & expiry selection (Step 9)
+    recommended_strike      FLOAT,
+    recommended_expiry      DATE,
+    recommended_premium     FLOAT,
+    recommended_delta       FLOAT,
+    recommended_iv          FLOAT,
+    expiry_preference       VARCHAR(10),                 -- 'NEAR' / 'FAR'
+    breakeven_upper         FLOAT,                       -- for SELL CE: strike + premium
+    breakeven_lower         FLOAT,                       -- for SELL PE: strike - premium
+
+    -- Account routing (Module 3)
+    account_role            VARCHAR(10),                 -- 'master' / 'child'
+    master_has_ce           BOOLEAN DEFAULT FALSE,       -- child: master already wrote CE here
+    referral_flag           BOOLEAN DEFAULT FALSE,       -- TRUE = blocked by master's position
+
+    -- Confidence factors (Step 10 display)
+    factor_seasonal         VARCHAR(20),                 -- 'POSITIVE' / 'NEUTRAL' / 'NEGATIVE'
+    factor_stddev           VARCHAR(20),                 -- 'WITHIN_1SIGMA' / 'NEAR_2SIGMA' / 'OUTSIDE'
+    factor_news             VARCHAR(20),
+    factor_corp_event       VARCHAR(40),                 -- human-readable event label or NULL
+
+    computed_at             DATETIME DEFAULT NOW(),
+    UNIQUE KEY uq_user_symbol_date (user_id, symbol, signal_date)
+);
+-- Used by: Module 4 Steps 7-10 (suggestion engine writes here)
+-- Read by: dashboard render (Step 10); CE/PE screener UI tabs
+-- Refresh: recomputed when user opens screener or clicks Refresh
+```
+
+---
+
+# `option_candidates`
+Filtered OTM strike candidates that passed the liquidity/delta/premium filter in Step 9. Child of screener_signals.
+
+```sql
+CREATE TABLE option_candidates (
+    id                  INT AUTO_INCREMENT PRIMARY KEY,
+    signal_id           INT NOT NULL,                    -- FK → screener_signals.id
+    user_id             INT NOT NULL,
+    symbol              VARCHAR(100) NOT NULL,
+    option_type         VARCHAR(5) NOT NULL,             -- 'CE' / 'PE'
+    strike              FLOAT NOT NULL,
+    expiry              DATE NOT NULL,
+    premium             FLOAT,
+    delta               FLOAT,
+    iv_pct              FLOAT,
+    volume              INT,
+    open_interest       INT,
+    lot_size            INT,
+    premium_per_lot     FLOAT,                           -- premium × lot_size
+    passes_filter       BOOLEAN DEFAULT TRUE,            -- FALSE = failed min-premium/delta/vol filter
+    filter_fail_reason  VARCHAR(100),
+    created_at          DATETIME DEFAULT NOW(),
+    KEY idx_signal (signal_id),
+    KEY idx_user_symbol (user_id, symbol)
+);
+-- Used by: Step 9 (strike selection writes filtered candidates)
+-- Read by: Step 10 dashboard (show top candidate), BE graph tab
+```
+
+---
+
+# `seasonal_stats`
+Historical monthly return statistics per symbol. Pre-computed offline, read by Module 2 Step 4.
+
+```sql
+CREATE TABLE seasonal_stats (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    symbol          VARCHAR(100) NOT NULL,
+    month_num       INT NOT NULL,                        -- 1=Jan … 12=Dec
+    month_name      VARCHAR(10),
+    avg_return_pct  FLOAT,                               -- historical avg monthly return
+    win_rate_pct    FLOAT,                               -- % of years this month was positive
+    rank_best_worst INT,                                 -- 1=best month, 12=worst month
+    years_data      INT,                                 -- how many years of data
+    updated_at      DATETIME DEFAULT NOW(),
+    UNIQUE KEY uq_symbol_month (symbol, month_num)
+);
+-- Used by: Module 2 Step 4 (seasonal_code module reads this)
+-- Populated by: offline batch job or on-demand compute from historical prices
+```
+
+---
+
+# `stddev_bands`
+Precomputed or cached standard deviation price bands per symbol. Updated daily.
+
+```sql
+CREATE TABLE stddev_bands (
+    id                  INT AUTO_INCREMENT PRIMARY KEY,
+    symbol              VARCHAR(100) NOT NULL,
+    calc_date           DATE NOT NULL,
+    lookback_days       INT DEFAULT 20,                  -- rolling window
+    mean_price          FLOAT,
+    sigma               FLOAT,                           -- 1 standard deviation
+    upper_1sigma        FLOAT,
+    lower_1sigma        FLOAT,
+    upper_2sigma        FLOAT,
+    lower_2sigma        FLOAT,
+    current_spot        FLOAT,
+    z_score             FLOAT,                           -- (spot - mean) / sigma
+    band_label          VARCHAR(20),                     -- 'WITHIN_1SIGMA' / 'AT_2SIGMA' / 'OUTSIDE_2SIGMA'
+    updated_at          DATETIME DEFAULT NOW(),
+    UNIQUE KEY uq_symbol_date (symbol, calc_date)
+);
+-- Used by: Module 2 Step 4 (mmm_code writes here; impact_cache mirrors summary)
+-- Read by: Module 4 Step 8 (confidence scoring)
+```
+
+---
+
+# `master_reference_signals`
+Signals from the master account that child accounts should see. Avoids re-querying master's positions on every child request.
+
+```sql
+CREATE TABLE master_reference_signals (
+    id                  INT AUTO_INCREMENT PRIMARY KEY,
+    master_account_id   INT NOT NULL,                    -- FK → accounts.id (master)
+    symbol              VARCHAR(100) NOT NULL,
+    signal_date         DATE NOT NULL,
+    has_active_short_ce BOOLEAN DEFAULT FALSE,           -- master has sold CE → block children
+    has_active_short_pe BOOLEAN DEFAULT FALSE,
+    has_long_fut        BOOLEAN DEFAULT FALSE,
+    has_holding         BOOLEAN DEFAULT FALSE,
+    ce_strike           FLOAT,
+    ce_expiry           DATE,
+    pe_strike           FLOAT,
+    pe_expiry           DATE,
+    spot_price          FLOAT,
+    updated_at          DATETIME DEFAULT NOW(),
+    UNIQUE KEY uq_master_symbol_date (master_account_id, symbol, signal_date)
+);
+-- Used by: Module 3 Step 6 (account router checks this before passing to Module 4)
+-- Populated by: nightly or on-demand sync from master account's fno_open_positions
+-- Read by: child account screener requests
+```
+
+---
+
+ Summary Table
+
+| Table | Module | Purpose |
+|---|---|---|
+| `accounts` | 3 | Role (master/child), auth |
+| `users` | 1, 3 | Portfolio user per broker per account |
+| `holdings` | 1, 7 | Current EQ positions and avg cost |
+| `fno_open_positions` | 1, 7 | Open CE/PE/FUT contracts |
+| `stock_master_mapping` | 2, 5 | F&O flag, lot size per ISIN |
+| `scrip_master_cache` | 2, 9 | Option chain tokens, strikes, lot sizes |
+| `corporate_actions` | 2, 8 | Corp event gate for signals |
+| `wishlists` | 1 | User's watchlist symbols |
+| `impact_cache` | 2 | Daily price/IV/seasonal/news enrichment |
+| `screener_signals` | 4 | Computed signal per user/symbol/day |
+| `option_candidates` | 9 | Filtered OTM strikes for recommendation |
+| `seasonal_stats` | 2 | Historical monthly return ranks |
+| `stddev_bands` | 2, 8 | ±1σ/±2σ price bands per symbol |
+| `master_reference_signals` | 3 | Master's positions visible to children |
