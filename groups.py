@@ -8,6 +8,8 @@ from services.group_service import (
     get_group_members, get_group_holdings
 )
 from dependencies.auth import get_current_account
+from services.task_status import start_task, finish_task
+import asyncio
 
 router = APIRouter(tags=["Groups"])
 
@@ -22,77 +24,92 @@ class GroupCreate(BaseModel):
     name: str
 
 @router.post("/groups/")
-def new_group(
+async def new_group(
     data: GroupCreate,
     account_id: int = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
     try:
-        return create_group(data.name, account_id)
+        return await asyncio.to_thread(create_group, data.name, account_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/groups/")
-def all_groups(
+async def all_groups(
     account_id: int = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
-    return list_groups(account_id)
+    return await asyncio.to_thread(list_groups, account_id)
 
 @router.post("/groups/{group_id}/members/{user_id}")
-def add_member_endpoint(
+async def add_member_endpoint(
     group_id: int,
     user_id: int,
     account_id: int = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
     try:
-        return add_member(group_id, user_id, account_id)
+        return await asyncio.to_thread(add_member, group_id, user_id, account_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
 @router.delete("/groups/{group_id}/members/{user_id}")
-def remove_member_endpoint(
+async def remove_member_endpoint(
     group_id: int,
     user_id: int,
     account_id: int = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
     try:
-        return remove_member(group_id, user_id, account_id)
+        return await asyncio.to_thread(remove_member, group_id, user_id, account_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
 @router.get("/groups/{group_id}/members")
-def members(
+async def members(
     group_id: int,
     account_id: int = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
-    return get_group_members(group_id, account_id)
+    return await asyncio.to_thread(get_group_members, group_id, account_id)
 
 @router.get("/groups/{group_id}/holdings")
-def group_holdings(
+async def group_holdings(
     group_id: int,
     account_id: int = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
-    return get_group_holdings(group_id, account_id)
+    return await asyncio.to_thread(get_group_holdings, group_id, account_id)
 
 @router.delete("/groups/{group_id}")
-def delete_group(
+async def delete_group(
     group_id: int,
     account_id: int = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
-    # Verify ownership
-    group = db.execute(
-        text("SELECT id FROM user_groups WHERE id = :gid AND account_id = :aid"),
-        {"gid": group_id, "aid": account_id}
-    ).first()
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    db.execute(text("DELETE FROM user_groups WHERE id = :gid"), {"gid": group_id})
-    db.execute(text("DELETE FROM group_members WHERE group_id = :gid"), {"gid": group_id})
-    db.commit()
-    return {"status": "deleted"}
+    if not start_task(account_id, f"delete_group_{group_id}", "Deleting group..."):
+        return {"status": "busy", "message": "This group is already being deleted."}
+
+    def _do_delete():
+        group = db.execute(
+            text("SELECT id FROM user_groups WHERE id = :gid AND account_id = :aid"),
+            {"gid": group_id, "aid": account_id}
+        ).first()
+        if not group:
+            return None
+        db.execute(text("DELETE FROM user_groups WHERE id = :gid"), {"gid": group_id})
+        db.execute(text("DELETE FROM group_members WHERE group_id = :gid"), {"gid": group_id})
+        db.commit()
+        return True
+
+    try:
+        result = await asyncio.to_thread(_do_delete)
+        finish_task(account_id, f"delete_group_{group_id}")
+        if result is None:
+            raise HTTPException(status_code=404, detail="Group not found")
+        return {"status": "deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        finish_task(account_id, f"delete_group_{group_id}", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")

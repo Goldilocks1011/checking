@@ -1201,23 +1201,23 @@ def get_master_reference_positions(requesting_account_id: int) -> dict:
                     })
 
             # ── 4. Holding / long FUT uncovered ───────────────────────────────
-            if (has_holding or has_long_fut) and not has_sold_ce:
-                unreal_h = round((spot - avg_price) * eq_qty, 2) if (spot and avg_price and eq_qty) else 0
-                fut_qty  = int(sum(p["open_qty"] for p in long_fut_list))
-                status   = _child_status(can, "EQ/FUT", 0)
-                reference_positions.append({
-                    "symbol":         can,
-                    "position_type":  "HOLDING / LONG FUT",
-                    "instrument":     "EQ/FUT",
-                    "strike":         "—",
-                    "expiry":         "—",
-                    "master_qty":     int(eq_qty) + fut_qty,
-                    "master_avg":     round(avg_price, 2),
-                    "spot":           round(spot, 2) if spot else None,
-                    "master_pnl":     unreal_h,
-                    "child_status":   status,
-                    "suggestion":     "Fresh opportunity: SELL CE above spot to collect premium.",
-                })
+            # if (has_holding or has_long_fut) and not has_sold_ce:
+            #     unreal_h = round((spot - avg_price) * eq_qty, 2) if (spot and avg_price and eq_qty) else 0
+            #     fut_qty  = int(sum(p["open_qty"] for p in long_fut_list))
+            #     status   = _child_status(can, "EQ/FUT", 0)
+            #     reference_positions.append({
+            #         "symbol":         can,
+            #         "position_type":  "HOLDING / LONG FUT",
+            #         "instrument":     "EQ/FUT",
+            #         "strike":         "—",
+            #         "expiry":         "—",
+            #         "master_qty":     int(eq_qty) + fut_qty,
+            #         "master_avg":     round(avg_price, 2),
+            #         "spot":           round(spot, 2) if spot else None,
+            #         "master_pnl":     unreal_h,
+            #         "child_status":   status,
+            #         "suggestion":     "Fresh opportunity: SELL CE above spot to collect premium.",
+            #     })
 
             # ── 5. Bought CE/PE (informational) ───────────────────────────────
             for pos_list_bce in [bought_ce_list, bought_pe_list]:

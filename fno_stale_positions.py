@@ -4,34 +4,12 @@ fno_stale_positions.py
 Detects F&O positions in fno_transactions that are "stale" because a
 SEBI-mandated dividend adjustment happened AFTER the transaction was recorded
 but the transaction still uses the OLD strike/qty.
-
-This is different from fno_dividend_adjustment_service.py which handles the
-current/future adjustment workflow.  This module answers the question:
-
-  "Which rows in my fno_transactions table are using a pre-dividend strike
-   or quantity that should have been updated?"
-
-Algorithm:
-  1. Fetch all APPLIED/USER_UPLOADED adjustments for the user.
-  2. For each adjustment, look for fno_transactions rows where:
-       - underlying matches
-       - instrument_type matches
-       - trade_date >= ex_date  (should be post-adjustment)
-       - strike_price == old_strike  (still uses the OLD strike — WRONG)
-     These rows are "stale" — they reference a strike that no longer exists
-     after the adjustment.
-  3. Also look for PENDING adjustments where the position was opened BEFORE
-     ex_date and is still open — these are "at-risk" positions that haven't
-     been adjusted yet.
-
-Returns structured data for the UI to display.
-
-Router: GET /fno/stale-positions/{user_id}
 """
 from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
@@ -53,56 +31,7 @@ def get_db():
         db.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Core detection
-# ─────────────────────────────────────────────────────────────────────────────
-
 def detect_stale_positions(user_id: int) -> dict:
-    """
-    Returns:
-    {
-        "stale_transactions": [
-            {
-                "txn_id": int,
-                "underlying": str,
-                "instrument_type": str,
-                "trade_date": str,
-                "trade_type": str,
-                "quantity": float,
-                "price": float,
-                "old_strike": float,        # the strike in the transaction row
-                "correct_strike": float,    # what it should be after adjustment
-                "ex_date": str,             # dividend ex-date
-                "dividend_amount": float,
-                "adjustment_id": int,
-                "adjustment_status": str,   # APPLIED / USER_UPLOADED
-                "issue": str,               # human-readable explanation
-            }
-        ],
-        "at_risk_positions": [
-            {
-                "underlying": str,
-                "instrument_type": str,
-                "expiry_date": str,
-                "strike_price": float,
-                "net_qty": float,
-                "avg_price": float,
-                "ex_date": str,
-                "dividend_amount": float,
-                "new_strike": float,
-                "new_qty": int,
-                "days_until_ex": int,
-                "adjustment_id": int,
-                "issue": str,
-            }
-        ],
-        "summary": {
-            "stale_count": int,
-            "at_risk_count": int,
-            "total_issues": int,
-        }
-    }
-    """
     db = SessionLocal()
     try:
         stale_txns: list[dict] = []
@@ -111,8 +40,6 @@ def detect_stale_positions(user_id: int) -> dict:
         today = date.today()
         today_str = today.strftime("%Y-%m-%d")
 
-        # ── 1. STALE TRANSACTIONS (post-ex-date trades still at old strike) ───
-        # Find all adjustments that have been processed (APPLIED or USER_UPLOADED)
         applied_adjs = db.execute(text("""
             SELECT id, underlying, instrument_type, old_strike, new_strike,
                    old_qty, new_qty, ex_date, dividend_amount, status, expiry_date
@@ -125,8 +52,6 @@ def detect_stale_positions(user_id: int) -> dict:
         for adj in applied_adjs:
             ex_date_str = str(adj.ex_date)[:10]
 
-            # Look for transactions AFTER ex_date still using old_strike
-            # These are wrong — they should use new_strike
             stale_rows = db.execute(text("""
                 SELECT id, trade_date, trade_type, quantity, price,
                        strike_price, expiry_date, broker
@@ -170,8 +95,6 @@ def detect_stale_positions(user_id: int) -> dict:
                     ),
                 })
 
-        # ── 2. AT-RISK POSITIONS (open before ex_date, not yet adjusted) ──────
-        # Find PENDING adjustments — positions that haven't been handled yet
         pending_adjs = db.execute(text("""
             SELECT id, underlying, instrument_type, old_strike, new_strike,
                    old_qty, new_qty, ex_date, dividend_amount, expiry_date, spot_prev
@@ -189,7 +112,6 @@ def detect_stale_positions(user_id: int) -> dict:
             except Exception:
                 days_until = 0
 
-            # Compute actual open qty for this contract on day before ex_date
             pos_date = (ex_dt - timedelta(days=1)).strftime("%Y-%m-%d") if ex_dt > today else today_str
 
             net_result = db.execute(text("""
@@ -220,7 +142,7 @@ def detect_stale_positions(user_id: int) -> dict:
             net_qty  = buy_qty - sell_qty
 
             if abs(net_qty) < 0.001:
-                continue  # already closed before ex_date
+                continue
 
             avg_price = 0.0
             if net_qty > 0 and buy_qty > 0:
@@ -277,15 +199,10 @@ def detect_stale_positions(user_id: int) -> dict:
         db.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Router endpoint
-# ─────────────────────────────────────────────────────────────────────────────
-
 @router.get("/fno/stale-positions/{user_id}")
-def get_stale_positions(user_id: int, db: Session = Depends(get_db)):
+async def get_stale_positions(user_id: int, db: Session = Depends(get_db)):
     """
-    Returns two lists:
-    1. stale_transactions — post-ex-date trades still using the pre-dividend strike.
-    2. at_risk_positions  — currently open positions that face an upcoming adjustment.
+    Runs the DB-loop-heavy detection in a background thread so it never
+    blocks other users' requests.
     """
-    return detect_stale_positions(user_id)
+    return await asyncio.to_thread(detect_stale_positions, user_id)

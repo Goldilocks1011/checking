@@ -5,6 +5,7 @@ from sqlalchemy import text
 from database import SessionLocal
 from services.engine import process_file
 from services.engine import recalculate_derived
+from services.task_status import start_task, finish_task
 from io import BytesIO
 import asyncio
 import logging
@@ -28,37 +29,45 @@ async def upload_equity(
     file_type: str = Form("EQ"),
     db: Session = Depends(get_db)
 ):
-    # Read the entire file into memory
-    file_bytes = await file.read()
-
-    if broker.upper() != "IIFL":
-        existing = db.execute(
-            text("SELECT id FROM processed_files WHERE user_id = :uid AND filename = :fn AND file_type = :ft"),
-            {"uid": user_id, "fn": file.filename, "ft": file_type}
-        ).first()
-        if existing:
-            return {
-                "status": "skipped",
-                "message": f"'{file.filename}' already processed as {file_type}"
-            }
-
-    buf = BytesIO(file_bytes)
-    buf.name = file.filename
-
-    # Run the heavy parsing + FIFO recalculation in a background thread
-    # so other users' requests are not blocked.
-    result = await asyncio.to_thread(process_file, buf, user_id, broker, file_type)
+    if not start_task(user_id, "upload_equity", f"Processing '{file.filename}'..."):
+        return {"status": "busy", "message": "An equity upload is already processing for this user. Please wait."}
 
     try:
-        db.execute(
-            text("UPDATE processed_files SET file_content = :content WHERE user_id = :uid AND filename = :fn"),
-            {"content": file_bytes, "uid": user_id, "fn": file.filename}
-        )
-        db.commit()
-    except Exception as e:
-        logger.info(f"Could not save file content: {e}")
+        file_bytes = await file.read()
 
-    return result
+        if broker.upper() != "IIFL":
+            existing = db.execute(
+                text("SELECT id FROM processed_files WHERE user_id = :uid AND filename = :fn AND file_type = :ft"),
+                {"uid": user_id, "fn": file.filename, "ft": file_type}
+            ).first()
+            if existing:
+                finish_task(user_id, "upload_equity")
+                return {
+                    "status": "skipped",
+                    "message": f"'{file.filename}' already processed as {file_type}"
+                }
+
+        buf = BytesIO(file_bytes)
+        buf.name = file.filename
+
+        result = await asyncio.to_thread(process_file, buf, user_id, broker, file_type)
+
+        try:
+            db.execute(
+                text("UPDATE processed_files SET file_content = :content WHERE user_id = :uid AND filename = :fn"),
+                {"content": file_bytes, "uid": user_id, "fn": file.filename}
+            )
+            db.commit()
+        except Exception as e:
+            logger.info(f"Could not save file content: {e}")
+
+        finish_task(user_id, "upload_equity")
+        return result
+
+    except Exception as e:
+        logger.error(f"[UploadEquity] failed for user {user_id}: {e}", exc_info=True)
+        finish_task(user_id, "upload_equity", error=str(e))
+        return {"status": "error", "message": f"Upload failed: {e}"}
 
 @router.get("/upload/history/{user_id}")
 def get_upload_history(user_id: int, db: Session = Depends(get_db)):

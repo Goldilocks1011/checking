@@ -144,181 +144,154 @@ def process_file(uploaded_file, user_id: int, broker: str, file_type: str = 'EQ'
 
 # ---------- Core FIFO recalculation (exactly like old project) ----------
 def recalculate_derived(user_id: int, db):
-    """Full FIFO recalculation – deletes and rebuilds holdings, pnl, intraday."""
-    logger.info(f"[FIFO] Starting for user {user_id}")
+    """
+    Full chronological FIFO recalculation engine.
+    Deletes and rebuilds holdings, pnl, and intraday trades securely.
+    """
+    logger.info(f"[FIFO] Starting correct daily engine for user {user_id}")
     db.execute(text("DELETE FROM holdings WHERE user_id=:uid"), {"uid": user_id})
     db.execute(text("DELETE FROM pnl WHERE user_id=:uid"), {"uid": user_id})
     db.execute(text("DELETE FROM intraday WHERE user_id=:uid"), {"uid": user_id})
     db.commit()
 
-    # Load all transactions in order
+    # 1. Load all transactions in absolute order of execution
     rows = db.execute(
         text("SELECT * FROM transactions WHERE user_id=:uid ORDER BY trade_date ASC, id ASC"),
         {"uid": user_id}
     ).fetchall()
 
     if not rows:
-        logger.warning("[FIFO] No transactions found")
+        logger.warning("[FIFO] No transactions found to re-calculate.")
         return
 
-    buy_lots = defaultdict(list)   # key = symbol only (critical!)
-    pnl_rows = []
-    intraday_rows = []
-
-    # ─────────────────────────────────────────────────────────────────────────────
-    # STEP 0: Group transactions by (symbol, date) and apply INTRADAY NETTING
-    # ─────────────────────────────────────────────────────────────────────────────
-    daily_txns = defaultdict(lambda: {"buy": [], "sell": [], "meta": {}})
-
+    # 2. Group transactions strictly by date to ensure day-by-day processing
+    transactions_by_date = defaultdict(lambda: defaultdict(list))
     for row in rows:
-        symbol = row.symbol
-        trade_date = row.trade_date
-        trade_type = row.trade_type
-        qty = float(row.quantity)
-        price = float(row.price)
-        
-        key = (symbol, trade_date)
-        
-        meta = {
-            "company_name": row.company_name or symbol,
-            "isin": row.isin or "",
-            "exchange": row.exchange or "NSE",
-            "segment": row.segment or "EQ",
-            "broker": row.broker or "",
-        }
-        
-        if trade_type in ("BUY", "TRANSFER_IN", "BONUS", "DEMERGER_IN"):
-            buy_price = 0.0 if trade_type in ("BONUS", "DEMERGER_IN") else price
-            daily_txns[key]["buy"].append({
-                "date": trade_date,
-                "price": buy_price,
-                "qty": qty,
-                "type": trade_type,
-                **meta
-            })
-            daily_txns[key]["meta"] = meta
-        
-        elif trade_type == "SELL":
-            daily_txns[key]["sell"].append({
-                "date": trade_date,
-                "price": price,
-                "qty": qty,
-            })
+        date_str = str(row.trade_date)[:10]
+        transactions_by_date[date_str][row.symbol].append(row)
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # STEP 1: Apply INTRADAY NETTING — offset same-day BUYs vs SELLs
-    # ─────────────────────────────────────────────────────────────────────────────
-    # After netting, we have:
-    #   remaining_buys  = BUY qty not matched to same-day SELL
-    #   remaining_sells = SELL qty not matched to same-day BUY
-    # Only remaining_sells touch the historical lot queue (FIFO).
+    sorted_dates = sorted(transactions_by_date.keys())
 
-    netting_result = defaultdict(lambda: {"buy_lots": [], "sell_qty": 0.0, "meta": {}})
-
-    for (symbol, trade_date), daily_data in daily_txns.items():
-        buys = daily_data["buy"]
-        sells = daily_data["sell"]
-        meta = daily_data["meta"]
-        
-        # Total quantities for the day
-        total_buy_qty = sum(b["qty"] for b in buys)
-        total_sell_qty = sum(s["qty"] for s in sells)
-        
-        # Net the smaller against the larger
-        net_buy_qty = max(0, total_buy_qty - total_sell_qty)
-        net_sell_qty = max(0, total_sell_qty - total_buy_qty)
-        
-        # Only REMAINING buys (after netting) go into the lot queue
-        if net_buy_qty > 0:
-            # Distribute the net buy qty across buy transactions (prioritize earlier buys)
-            remaining = net_buy_qty
-            for buy in buys:
-                if remaining <= 0:
-                    break
-                allocate = min(remaining, buy["qty"])
-                netting_result[symbol]["buy_lots"].append({
-                    "date": trade_date,
-                    "price": buy["price"],
-                    "remaining": allocate,
-                    **meta
-                })
-                remaining -= allocate
-        
-        # REMAINING sells (after netting) will be applied to historical lots
-        netting_result[symbol]["sell_qty"] = net_sell_qty
-        netting_result[symbol]["meta"] = meta
-
-
-    # ─────────────────────────────────────────────────────────────────────────────
-    # STEP 2: Process with FIFO using NETTING RESULTS
-    # ─────────────────────────────────────────────────────────────────────────────
-    buy_lots = defaultdict(list)
+    buy_lots = defaultdict(list)  # Persistent chronological queue per symbol
     pnl_rows = []
     intraday_rows = []
 
-    # First, add all the netting results (intraday-netted buys)
-    for symbol, data in netting_result.items():
-        buy_lots[symbol].extend(data["buy_lots"])
+    # 3. Process day-by-day chronologically
+    for t_date in sorted_dates:
+        day_symbols = transactions_by_date[t_date]
+        
+        for symbol, txns in day_symbols.items():
+            buys = []
+            sells = []
+            
+            meta = {
+                "company_name": symbol,
+                "isin": "",
+                "exchange": "NSE",
+                "segment": "EQ",
+                "broker": ""
+            }
+            
+            for t in txns:
+                meta["company_name"] = t.company_name or symbol
+                meta["isin"] = t.isin or ""
+                meta["exchange"] = t.exchange or "NSE"
+                meta["segment"] = t.segment or "EQ"
+                meta["broker"] = t.broker or ""
+                
+                qty = float(t.quantity)
+                price = float(t.price)
+                
+                if t.trade_type in ("BUY", "TRANSFER_IN", "BONUS", "DEMERGER_IN"):
+                    # Corporate actions like BONUS enter the cost basis queue at 0 value
+                    buy_price = 0.0 if t.trade_type in ("BONUS", "DEMERGER_IN") else price
+                    buys.append({"qty": qty, "price": buy_price, "type": t.trade_type, "meta": meta.copy()})
+                elif t.trade_type in ("SELL", "TRANSFER_OUT", "MERGER_OUT"):
+                    sells.append({"qty": qty, "price": price, "type": t.trade_type, "meta": meta.copy()})
 
-    # Now process sells against the netting-aware lot queue
-    for (symbol, trade_date), daily_data in daily_txns.items():
-        sells = daily_data["sell"]
-        if not sells:
-            continue
-        
-        meta = daily_data["meta"]
-        net_sell_qty = netting_result[symbol]["sell_qty"]
-        
-        if net_sell_qty <= 0:
-            continue  # This sell was fully netted; skip FIFO application
-        
-        # Apply only the REMAINING sell quantity to historical lots (FIFO)
-        rem_sell = net_sell_qty
-        sell_price = sells[0]["price"]  # Use first sell price of the day
-        
-        if not buy_lots[symbol]:
-            # Uncovered sell — all shares are short
-            pnl_rows.append(_pnl_row(user_id, symbol, meta, None, trade_date, 0, sell_price, net_sell_qty, None, "SHORT", 0.20))
-            continue
-        
-        while rem_sell > 0 and buy_lots[symbol]:
-            lot = buy_lots[symbol][0]
-            matched = min(lot["remaining"], rem_sell)
+            total_buy_qty = sum(b["qty"] for b in buys)
+            total_sell_qty = sum(s["qty"] for s in sells)
             
-            try:
-                days = (datetime.strptime(trade_date, "%Y-%m-%d") - datetime.strptime(lot["date"], "%Y-%m-%d")).days
-            except Exception:
-                days = 0
-            
-            gross = (sell_price - lot["price"]) * matched
-            
-            if days == 0:
+            # A. Calculate Intraday Netting first (speculative volume matching)
+            intraday_qty = min(total_buy_qty, total_sell_qty)
+            if intraday_qty > 0:
+                day_total_buy_val = sum(b["qty"] * b["price"] for b in buys)
+                day_avg_buy_price = day_total_buy_val / total_buy_qty if total_buy_qty > 0 else 0.0
+                
+                day_total_sell_val = sum(s["qty"] * s["price"] for s in sells)
+                day_avg_sell_price = day_total_sell_val / total_sell_qty if total_sell_qty > 0 else 0.0
+                
+                gross_pnl = (day_avg_sell_price - day_avg_buy_price) * intraday_qty
+                
                 intraday_rows.append({
                     "user_id": user_id,
                     "symbol": symbol,
-                    "company_name": lot["company_name"],
+                    "company_name": meta["company_name"],
                     "exchange": meta["exchange"],
                     "segment": meta["segment"],
-                    "trade_date": trade_date,
-                    "buy_price": lot["price"],
-                    "sell_price": sell_price,
-                    "quantity": matched,
-                    "gross_pnl": round(gross, 2),
+                    "trade_date": t_date,
+                    "buy_price": round(day_avg_buy_price, 4),
+                    "sell_price": round(day_avg_sell_price, 4),
+                    "quantity": round(intraday_qty, 4),
+                    "gross_pnl": round(gross_pnl, 2),
                     "broker": meta["broker"],
                 })
-            else:
-                term = "LONG" if days > 365 else "SHORT"
-                tax_rate = 0.125 if term == "LONG" else 0.20
-                pnl_rows.append(
-                    _pnl_row(user_id, symbol, lot, lot["date"], trade_date,
-                            lot["price"], sell_price, matched, days, term, tax_rate)
-                )
-            
-            lot["remaining"] -= matched
-            rem_sell -= matched
-            if lot["remaining"] <= 0:
-                buy_lots[symbol].pop(0)
-    # ----- Insert holdings -----
+
+            # B. Handle Delivery Additions (New remaining lots added to FIFO queue)
+            if total_buy_qty > total_sell_qty:
+                rem_buy_qty = total_buy_qty - total_sell_qty
+                for b in buys:
+                    if rem_buy_qty <= 0:
+                        break
+                    allocated_qty = min(rem_buy_qty, b["qty"])
+                    buy_lots[symbol].append({
+                        "date": t_date,
+                        "price": b["price"],
+                        "remaining": allocated_qty,
+                        "company_name": b["meta"]["company_name"],
+                        "isin": b["meta"]["isin"],
+                        "exchange": b["meta"]["exchange"],
+                        "segment": b["meta"]["segment"],
+                        "broker": b["meta"]["broker"]
+                    })
+                    rem_buy_qty -= allocated_qty
+
+            # C. Handle Delivery Sales (Remaining sales consume past historical queue via FIFO)
+            elif total_sell_qty > total_buy_qty:
+                rem_sell_qty = total_sell_qty - total_buy_qty
+                day_total_sell_val = sum(s["qty"] * s["price"] for s in sells)
+                day_avg_sell_price = day_total_sell_val / total_sell_qty if total_sell_qty > 0 else 0.0
+                
+                while rem_sell_qty > 0 and buy_lots[symbol]:
+                    lot = buy_lots[symbol][0]
+                    matched_qty = min(lot["remaining"], rem_sell_qty)
+                    
+                    try:
+                        days = (datetime.strptime(t_date, "%Y-%m-%d") - datetime.strptime(lot["date"], "%Y-%m-%d")).days
+                    except Exception:
+                        days = 0
+                        
+                    term = "LONG" if days > 365 else "SHORT"
+                    tax_rate = 0.125 if term == "LONG" else 0.20
+                    
+                    pnl_rows.append(_pnl_row(
+                        user_id, symbol, meta, lot["date"], t_date,
+                        lot["price"], day_avg_sell_price, matched_qty, days, term, tax_rate
+                    ))
+                    
+                    lot["remaining"] -= matched_qty
+                    rem_sell_qty -= matched_qty
+                    if lot["remaining"] <= 1e-5:
+                        buy_lots[symbol].pop(0)
+                        
+                if rem_sell_qty > 0:
+                    # Catch fallback for short delivery sales without an open matching buy history
+                    pnl_rows.append(_pnl_row(
+                        user_id, symbol, meta, None, t_date,
+                        0.0, day_avg_sell_price, rem_sell_qty, None, "SHORT", 0.20
+                    ))
+
+    # 4. Save clean processed states to your DB tables
     holdings_inserted = 0
     for symbol, lots in buy_lots.items():
         active = [l for l in lots if l["remaining"] > 0]
@@ -328,31 +301,23 @@ def recalculate_derived(user_id: int, db):
         total_cost = sum(l["price"] * l["remaining"] for l in active)
         avg_price = total_cost / total_qty if total_qty else 0
         first_date = active[0]["date"]
+        
         db.execute(
             text("""
                 INSERT INTO holdings
                 (user_id, symbol, company_name, exchange, isin, segment,
                  quantity, avg_buy_price, total_invested, first_buy_date)
-                VALUES (:uid, :sym, :comp, :exch, :isin, :seg,
-                        :qty, :avg, :inv, :first)
+                VALUES (:uid, :sym, :comp, :exch, :isin, :seg, :qty, :avg, :inv, :first)
             """),
             {
-                "uid": user_id,
-                "sym": symbol,
-                "comp": active[0]["company_name"],
-                "exch": active[-1].get("exchange", "NSE"),
-                "isin": active[0]["isin"],
-                "seg": active[0]["segment"],
-                "qty": round(total_qty, 4),
-                "avg": round(avg_price, 4),
-                "inv": round(total_cost, 2),
-                "first": first_date,
+                "uid": user_id, "sym": symbol, "comp": active[0]["company_name"],
+                "exch": active[-1].get("exchange", "NSE"), "isin": active[0]["isin"],
+                "seg": active[0]["segment"], "qty": round(total_qty, 4),
+                "avg": round(avg_price, 4), "inv": round(total_cost, 2), "first": first_date
             }
         )
         holdings_inserted += 1
 
-    # ----- Insert P&L rows -----
-    pnl_inserted = 0
     for row in pnl_rows:
         db.execute(
             text("""
@@ -366,10 +331,7 @@ def recalculate_derived(user_id: int, db):
             """),
             row
         )
-        pnl_inserted += 1
 
-    # ----- Insert intraday rows -----
-    intra_inserted = 0
     for row in intraday_rows:
         db.execute(
             text("""
@@ -381,11 +343,9 @@ def recalculate_derived(user_id: int, db):
             """),
             row
         )
-        intra_inserted += 1
 
     db.commit()
-    logger.info(f"[FIFO] Done: holdings={holdings_inserted}, pnl={pnl_inserted}, intraday={intra_inserted}")
-
+    logger.info(f"[FIFO] Complete: holdings={holdings_inserted}, pnl={len(pnl_rows)}, intraday={len(intraday_rows)}")
 
 def _pnl_row(user_id, symbol, meta, buy_date, sell_date, buy_price, sell_price, qty, days, term, tax_rate):
     gross = (sell_price - buy_price) * qty
