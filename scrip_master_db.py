@@ -126,7 +126,7 @@ def _normalize_broker_name(raw: str) -> str:
     """
     s = raw.strip().upper()
     # Remove trailing periods from individual tokens ("HLDG." → "HLDG")
-    s = re.sub(r'\.(\s|$)', r' ', s)
+    s = re.sub(r'\.([A-Z0-9]|$)', r' \1', s)
     # Drop ampersands
     s = s.replace("&", " ")
     # Expand abbreviations
@@ -357,61 +357,37 @@ def query_isin_fuzzy(symbol: str, company: str = "") -> str:
         # every single-word ticker, which is the majority of NSE symbols.
         _STOP_WORDS = {"OF", "AND", "THE", "IN", "AT", "A", "AN", "FOR", "&"}
         best_cand = norm_sym or norm_comp
+# ── Steps 3 & 4: Match all significant words (any order, any position) ──
         if best_cand:
             sig_words = [
                 w for w in best_cand.split()
                 if len(w) >= 3 and w not in _STOP_WORDS
             ]
             if len(sig_words) >= 1:
-                # 1. Space-separated (e.g., "HERO MOTO")
-                prefix_space = " ".join(sig_words[:2])
-                # 2. Joined together (e.g., "HEROMOTO" – matches "HEROMOTOCO")
-                prefix_joined = "".join(sig_words[:2])
-                # 3. Separated by wildcard (e.g., "ENGINEERS%IN" – matches "ENGINEERSIN")
-                prefix_pct = "%".join(sig_words[:2])
-
+                # Build AND conditions for each significant word
+                conds = " AND ".join([f"UPPER({col}) LIKE '%{w}%'" for w in sig_words])
                 for col in ("symbol_root", "name", "full_name"):
                     rows = db.execute(
                         text(f"""
                             SELECT isin, {col} AS matched_name
                             FROM scrip_master_cache
-                            WHERE (UPPER({col}) LIKE :prefix_space
-                                    OR UPPER({col}) LIKE :prefix_joined
-                                    OR UPPER({col}) LIKE :prefix_pct)
-                                AND exch = 'N' AND exch_type = 'C'
-                                AND series = 'EQ'
-                                AND isin IS NOT NULL AND isin != ''
+                            WHERE ({conds})
+                            AND exch = 'N' AND exch_type = 'C'
+                            AND series = 'EQ'
+                            AND isin IS NOT NULL AND isin != ''
                             ORDER BY LENGTH({col}) ASC
                             LIMIT 5
-                        """),
-                        {
-                            "prefix_space": f"{prefix_space}%",
-                            "prefix_joined": f"{prefix_joined}%",
-                            "prefix_pct": f"{prefix_pct}%"
-                        }
+                        """)
                     ).fetchall()
-
                     if rows:
                         best = rows[0]
-                        logger.info(f"[ScripMasterDB] fuzzy LIKE (col={col}): "
-                              f"prefix='{prefix_space}' or '{prefix_joined}' → matched='{best.matched_name}' "
-                              f"isin={best.isin}")
+                        logger.info(f"[ScripMasterDB] fuzzy contains (col={col}): "
+                            f"words={sig_words} → matched='{best.matched_name}' "
+                            f"isin={best.isin}")
                         if len(rows) > 1:
                             logger.info(f"[ScripMasterDB]   (ambiguous: {len(rows)} matches — "
-                                  f"using shortest: '{best.matched_name}')")
+                                f"using shortest: '{best.matched_name}')")
                         return best.isin.strip().upper()
-
-                    if rows:
-                        # Take shortest match (most specific name wins over parent company)
-                        best = rows[0]
-                        logger.info(f"[ScripMasterDB] fuzzy LIKE (col={col}): "
-                              f"prefix='{prefix}' → matched='{best.matched_name}' "
-                              f"isin={best.isin}")
-                        if len(rows) > 1:
-                            logger.info(f"[ScripMasterDB]   (ambiguous: {len(rows)} matches — "
-                                  f"using shortest: '{best.matched_name}')")
-                        return best.isin.strip().upper()
-
         # ── Step 5: last-resort — same LIKE prefix, but drop series='EQ' filter ──
         # Some legitimate equities are tagged with non-standard series codes in
         # 5paisa's export (e.g. blank series, or a series code not in our EQ

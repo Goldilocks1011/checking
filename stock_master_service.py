@@ -889,21 +889,6 @@ def _resolve_fno(raw_sym: str) -> tuple[bool, int]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def auto_populate(user_id: int) -> dict:
-    """
-    Scan all transactions for this user, resolve symbols to ISIN + canonical ticker,
-    populate stock_master_mapping and user_stock_symbol_mapping.
-
-    Non-equity instruments (bonds, rights entitlements, ETFs, SGBs) are silently
-    skipped — they never appear in the unresolved-symbols UI.  The 'skipped_non_equity'
-    count in the return dict tells you how many were filtered out.
-
-    Symbol resolution order per transaction row:
-      1. ScripMaster DB exact match
-      2. ScripMaster DB fuzzy/normalized match
-      3. ScripMaster CSV (if present on disk)
-      4. NSE API
-      5. → unmatched_symbols
-    """
     from services.symbol_resolver import get_canonical
     from services.scrip_master_db import classify_instrument
 
@@ -922,152 +907,131 @@ def auto_populate(user_id: int) -> dict:
         added = updated = unmatched = fno_set = skipped = 0
 
         for r in rows:
-            try:
-                raw_sym = str(r.symbol or "").strip()
-                company = str(r.company_name or raw_sym).strip()
-                broker  = str(r.broker or "").strip()
+            raw_sym = str(r.symbol or "").strip()
+            company = str(r.company_name or raw_sym).strip()
+            broker  = str(r.broker or "").strip()
 
-                if not raw_sym or raw_sym.upper() in ("NAN", "NONE", ""):
-                    continue
+            if not raw_sym or raw_sym.upper() in ("NAN", "NONE", ""):
+                continue
 
-                # ── Classify instrument before attempting resolution ───────────────
-                # classify_instrument() uses ScripMaster series codes + keyword patterns.
-                # BOND / ETF / RIGHTS / SGB → skip silently (no unmatched entry).
-                # EQUITY / UNKNOWN → proceed with resolution.
-                instrument_class = classify_instrument(raw_sym, company=company)
-                if instrument_class in ("BOND", "ETF", "RIGHTS", "SGB"):
-                    logger.info(f"[AutoPopulate] Skipping {instrument_class}: {raw_sym} ({company})")
+            # Classify instrument
+            instrument_class = classify_instrument(raw_sym, company=company)
+            if instrument_class in ("BOND", "ETF", "RIGHTS", "SGB"):
+                logger.info(f"[AutoPopulate] Skipping {instrument_class}: {raw_sym}")
+                skipped += 1
+                continue
+
+            # Canonical normalisation
+            canonical_sym = get_canonical(raw_sym)
+
+            # ISIN resolution (5-step pipeline)
+            isin, resolved_canonical = _resolve_isin(canonical_sym, company)
+            if not isin and canonical_sym != raw_sym:
+                isin, resolved_canonical = _resolve_isin(raw_sym, company)
+
+            if resolved_canonical:
+                canonical_sym = resolved_canonical
+
+            if not isin:
+                # Final classification check before adding to unmatched
+                instrument_class_retry = classify_instrument(raw_sym, company=company)
+                if instrument_class_retry in ("BOND", "ETF", "RIGHTS", "SGB"):
+                    logger.info(f"[AutoPopulate] Skipping {instrument_class_retry} (post-resolution): {raw_sym}")
                     skipped += 1
                     continue
-                # UNKNOWN is treated as potentially-equity and passed through resolution.
-                # If it's truly non-equity and ScripMaster has no record, it ends up in
-                # unmatched_symbols where the user can review and decide.
 
-                # ── Canonical normalisation ───────────────────────────────────────
-                canonical_sym = get_canonical(raw_sym)
-
-                # ── ISIN resolution (5-step pipeline, no hardcoded aliases) ──────
-                isin, resolved_canonical = _resolve_isin(canonical_sym, company)
-                if not isin and canonical_sym != raw_sym:
-                    isin, resolved_canonical = _resolve_isin(raw_sym, company)
-
-                if resolved_canonical:
-                    canonical_sym = resolved_canonical
-
-                if not isin:
-                    # Before adding to unmatched, do one final classification check:
-                    # query ScripMaster for the symbol and see if it returns a non-EQ
-                    # series — if yes, it's a non-equity instrument we couldn't classify
-                    # from name alone (e.g. unlisted bond series).
-                    instrument_class_retry = classify_instrument(raw_sym, company=company)
-                    if instrument_class_retry in ("BOND", "ETF", "RIGHTS", "SGB"):
-                        logger.info(f"[AutoPopulate] Skipping {instrument_class_retry} "
-                            f"(detected post-resolution): {raw_sym}")
-                        skipped += 1
-                        continue
-
-                    # Genuine unresolved equity — add to unmatched_symbols for user review
-                    exists = db.execute(
-                        text("SELECT id FROM unmatched_symbols "
-                            "WHERE user_id=:uid AND broker=:br AND raw_symbol=:sym"),
-                        {"uid": user_id, "br": broker, "sym": raw_sym}
-                    ).first()
-                    if not exists:
-                        db.execute(
-                            text("INSERT INTO unmatched_symbols "
-                                "(user_id, broker, raw_symbol, company_name) "
-                                "VALUES (:uid,:br,:sym,:co)"),
-                            {"uid": user_id, "br": broker, "sym": raw_sym, "co": company}
-                        )
-                        unmatched += 1
-                    continue
-
-                # ── Ensure stock_master_mapping has this ISIN ─────────────────────
-                existing_master = db.execute(
-                    text("SELECT isin, fno_available, lot_size FROM stock_master_mapping WHERE isin=:isin"),
-                    {"isin": isin}
+                # Add to unmatched_symbols
+                exists = db.execute(
+                    text("SELECT id FROM unmatched_symbols WHERE user_id=:uid AND broker=:br AND raw_symbol=:sym"),
+                    {"uid": user_id, "br": broker, "sym": raw_sym}
                 ).first()
-
-                fno_avail, lot_sz = _resolve_fno(canonical_sym)
-
-                if not existing_master:
+                if not exists:
                     db.execute(
-                        text("""INSERT INTO stock_master_mapping
-                                (isin, standard_name, canonical_symbol, fno_available, lot_size)
-                                VALUES (:isin, :std, :can, :fno, :lot)"""),
-                        {"isin": isin, "std": company, "can": canonical_sym,
-                        "fno": 1 if fno_avail else 0, "lot": lot_sz}
+                        text("INSERT INTO unmatched_symbols (user_id, broker, raw_symbol, company_name) VALUES (:uid,:br,:sym,:co)"),
+                        {"uid": user_id, "br": broker, "sym": raw_sym, "co": company}
                     )
-                    added += 1
-                else:
-                    old_lot = int(existing_master.lot_size or 0)
-                    old_fno = bool(existing_master.fno_available)
+                    unmatched += 1
+                continue
+
+            # Ensure stock_master_mapping has this ISIN
+            existing_master = db.execute(
+                text("SELECT isin, fno_available, lot_size FROM stock_master_mapping WHERE isin=:isin"),
+                {"isin": isin}
+            ).first()
+
+            fno_avail, lot_sz = _resolve_fno(canonical_sym)
+
+            if not existing_master:
+                db.execute(
+                    text("""INSERT INTO stock_master_mapping
+                            (isin, standard_name, canonical_symbol, fno_available, lot_size)
+                            VALUES (:isin, :std, :can, :fno, :lot)"""),
+                    {"isin": isin, "std": company, "can": canonical_sym,
+                     "fno": 1 if fno_avail else 0, "lot": lot_sz}
+                )
+                added += 1
+            else:
+                old_lot = int(existing_master.lot_size or 0)
+                old_fno = bool(existing_master.fno_available)
+                db.execute(
+                    text("""UPDATE stock_master_mapping
+                            SET canonical_symbol = COALESCE(NULLIF(canonical_symbol,''), :can),
+                                updated_at = NOW()
+                            WHERE isin = :isin"""),
+                    {"can": canonical_sym, "isin": isin}
+                )
+                if (fno_avail and lot_sz > 1) and (not old_fno or old_lot <= 1):
                     db.execute(
                         text("""UPDATE stock_master_mapping
-                                SET canonical_symbol = COALESCE(NULLIF(canonical_symbol,''), :can),
-                                    updated_at = NOW()
-                                WHERE isin = :isin"""),
-                        {"can": canonical_sym, "isin": isin}
+                                SET fno_available=:fno, lot_size=:lot, updated_at=NOW()
+                                WHERE isin=:isin"""),
+                        {"fno": 1, "lot": lot_sz, "isin": isin}
                     )
-                    if (fno_avail and lot_sz > 1) and (not old_fno or old_lot <= 1):
-                        db.execute(
-                            text("""UPDATE stock_master_mapping
-                                    SET fno_available=:fno, lot_size=:lot, updated_at=NOW()
-                                    WHERE isin=:isin"""),
-                            {"fno": 1, "lot": lot_sz, "isin": isin}
-                        )
-                        fno_set += 1
+                    fno_set += 1
 
-                # ── Upsert per-user-broker symbol mapping ─────────────────────────
-                db.execute(
-                    text("""INSERT INTO user_stock_symbol_mapping (user_id, isin, broker, symbol)
-                        VALUES (:uid, :isin, :br, :sym)
-                        ON DUPLICATE KEY UPDATE symbol = VALUES(symbol)"""),
-                    {"uid": user_id, "isin": isin, "br": broker, "sym": raw_sym}
-                )
-                updated += 1
+            # Upsert per-user-broker symbol mapping
+            db.execute(
+                text("""INSERT INTO user_stock_symbol_mapping (user_id, isin, broker, symbol)
+                       VALUES (:uid, :isin, :br, :sym)
+                       ON DUPLICATE KEY UPDATE symbol = VALUES(symbol)"""),
+                {"uid": user_id, "isin": isin, "br": broker, "sym": raw_sym}
+            )
+            updated += 1
 
-                # ── Cache normalisation ───────────────────────────────────────────
+            # Cache normalisation
+            db.execute(
+                text("INSERT IGNORE INTO symbol_normalisation (raw_symbol, canonical_symbol) VALUES (:raw, :can)"),
+                {"raw": raw_sym.upper(), "can": canonical_sym}
+            )
+            if company.upper() != raw_sym.upper():
                 db.execute(
-                    text("INSERT IGNORE INTO symbol_normalisation (raw_symbol, canonical_symbol) "
-                        "VALUES (:raw, :can)"),
-                    {"raw": raw_sym.upper(), "can": canonical_sym}
+                    text("INSERT IGNORE INTO symbol_normalisation (raw_symbol, canonical_symbol) VALUES (:raw, :can)"),
+                    {"raw": company.upper(), "can": canonical_sym}
                 )
-                if company.upper() != raw_sym.upper():
-                    db.execute(
-                        text("INSERT IGNORE INTO symbol_normalisation (raw_symbol, canonical_symbol) "
-                            "VALUES (:raw, :can)"),
-                        {"raw": company.upper(), "can": canonical_sym}
-                    )
 
-                # ── Mark previously unmatched as resolved ─────────────────────────
-                db.execute(
-                    text("""UPDATE unmatched_symbols SET resolved=1, resolved_isin=:isin
-                            WHERE user_id=:uid AND raw_symbol=:sym"""),
-                    {"isin": isin, "uid": user_id, "sym": raw_sym}
-                )
-            except Exception as e:
-                    # Log the exact error and the symbol that caused it
-                    logger.error(f"[AutoPopulate] Failed to process symbol '{raw_sym}': {e}", exc_info=True)
-                    # Continue to the next row instead of crashing
-                    continue  
-            db.commit()
-            return {
-                "added":               added,
-                "updated":             updated,
-                "unmatched":           unmatched,
-                "fno_enriched":        fno_set,
-                "skipped_non_equity":  skipped,   # bonds + rights + ETFs + SGBs
-            }
-            
+            # Mark previously unmatched as resolved
+            db.execute(
+                text("""UPDATE unmatched_symbols SET resolved=1, resolved_isin=:isin
+                        WHERE user_id=:uid AND raw_symbol=:sym"""),
+                {"isin": isin, "uid": user_id, "sym": raw_sym}
+            )
+
+        # ── COMMIT AND RETURN AFTER THE LOOP ──
+        db.commit()
+        return {
+            "added":               added,
+            "updated":             updated,
+            "unmatched":           unmatched,
+            "fno_enriched":        fno_set,
+            "skipped_non_equity":  skipped,
+        }
+
     except Exception as e:
         db.rollback()
+        logger.error(f"[AutoPopulate] Failed: {e}", exc_info=True)
         raise e
-        
     finally:
         db.close()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # update_custom_name  (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
