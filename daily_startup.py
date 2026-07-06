@@ -86,73 +86,45 @@ def step1_token() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def step2_scrip_master() -> None:
-    """
-    Downloads ScripMaster_all.csv from 5paisa and UPSERTs rows into
-    scrip_master_cache via the service function directly.
-
-    No HTTP call to our own FastAPI server — works even when uvicorn is down.
-
-    The ON DUPLICATE KEY UPDATE ensures:
-      - New rows are INSERTED.
-      - Changed rows are UPDATED  (name, lot_size, strike, expiry, etc.).
-      - Unchanged rows are touched only via updated_at.
-    """
     logger.info("\n[2/5] Downloading ScripMaster (direct, no uvicorn needed)…")
 
     try:
-        # Import the service that already has the download + upsert logic.
-        # It lives at backend/services/scrip_master_service.py or similar.
-        # We try several import paths for robustness.
-        download_fn = None
-
+        # Try to import the function from the correct module
+        from services.stock_master_service import download_and_upsert_scrip_master
+        download_fn = download_and_upsert_scrip_master
+    except ImportError:
         try:
-            from backend.services.scrip_master_service import download_and_upsert_scrip_master
+            from backend.services.stock_master_service import download_and_upsert_scrip_master
             download_fn = download_and_upsert_scrip_master
         except ImportError:
-            pass
+            download_fn = None
 
-        if download_fn is None:
-            try:
-                from services.scrip_master_service import download_and_upsert_scrip_master  # type: ignore
-                download_fn = download_and_upsert_scrip_master
-            except ImportError:
-                pass
+    if download_fn is not None:
+        logger.info("     Using service function (direct DB upsert)…")
+        result = download_fn()
+        inserted = result.get("inserted", 0)
+        updated  = result.get("updated",  0)
+        errors   = result.get("errors",   0)
+        size     = result.get("download_size", "?")
+        logger.info("     OK  inserted=%d  updated=%d  errors=%d  size=%s",
+                    inserted, updated, errors, size)
+        if errors > 0:
+            logger.warning("     WARN  %d rows had errors (usually non-fatal)", errors)
+        _verify_scrip_master_db()
+        return
 
-        if download_fn is None:
-            try:
-                from backend.routers.stock_master import _download_scrip_master_direct
-                download_fn = _download_scrip_master_direct
-            except ImportError:
-                pass
+    # ── If direct import fails, only then fall back to HTTP ──
+    logger.warning("     Service function not found — falling back to HTTP endpoint")
+    _step2_via_api()
 
-        if download_fn is not None:
-            logger.info("     Using service function (direct DB upsert)…")
-            result = download_fn()
-            inserted = result.get("inserted", 0)
-            updated  = result.get("updated",  0)
-            errors   = result.get("errors",   0)
-            size     = result.get("download_size", "?")
-            logger.info("     OK  inserted=%d  updated=%d  errors=%d  size=%s",
-                        inserted, updated, errors, size)
-            if errors > 0:
-                logger.warning("     WARN  %d rows had errors (usually non-fatal)", errors)
-            _verify_scrip_master_db()
-            return
-
-        # ── Fallback: try the FastAPI endpoint (requires uvicorn) ─────────────
-        logger.warning("     Service function not found — falling back to HTTP endpoint")
-        _step2_via_api()
-
-    except Exception as e:
-        logger.error("     FAIL  ScripMaster download: %s", e, exc_info=True)
-        logger.info("     TIP   Click 'Download ScripMaster' button in the UI as fallback")
+   
 
 
 def _step2_via_api() -> None:
     """HTTP fallback — calls our own FastAPI endpoint (requires uvicorn running)."""
     import requests as _req
 
-    url = f"{API_BASE_URL}/stock-master/download-scrip-master"
+    url = f"{API_BASE_URL}/stock-master/download-from-5paisa"
     for attempt in range(1, 4):
         try:
             logger.info("     HTTP %s (attempt %d, timeout=%ds)…", url, attempt, SCRIP_MASTER_TIMEOUT)

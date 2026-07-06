@@ -693,10 +693,10 @@ from collections import defaultdict
 from sqlalchemy import text
 from database import SessionLocal
 from services.nse_data_service import fetch_isin_from_nse, get_fno_info_from_nse, search_nse_symbol
-
+import requests
 import logging
 logger = logging.getLogger(__name__)
-
+from services.scrip_master_db import upsert_scrip_master
 # ─────────────────────────────────────────────────────────────────────────────
 # ISIN resolution — 5-step pipeline (no hardcoded aliases)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1168,3 +1168,22 @@ def get_user_stock_grid(user_id: int) -> list[dict]:
         return grid
     finally:
         db.close()
+        
+
+def download_and_upsert_scrip_master() -> dict:
+    """
+    Download ScripMaster_all.csv from 5paisa and upsert into scrip_master_cache.
+    Returns a dict with inserted, updated, errors, download_size.
+    """
+    url = "https://openapi.5paisa.com/VendorsAPI/Service1.svc/ScripMaster/segment/All"
+    try:
+        resp = requests.get(url, timeout=300)
+        resp.raise_for_status()
+        content = resp.content
+        logger.info(f"Downloaded {len(content)} bytes")
+        result = upsert_scrip_master(content)
+        result["download_size"] = len(content)
+        return result
+    except Exception as e:
+        logger.error(f"ScripMaster download failed: {e}")
+        raise
