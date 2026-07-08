@@ -4,7 +4,7 @@ account_router.py
 Determines account role and master reference for a given user.
 """
 from sqlalchemy import text
-from database import SessionLocal
+from backend.database import SessionLocal
 
 
 def get_account_role_and_master(user_id: int) -> tuple[str, int | None]:

@@ -234,6 +234,82 @@ def _load_prices_batch(rows: list, entity_id: int, is_group: bool, wl_cache_key:
 # ─────────────────────────────────────────────────────────────────────────────
 # NEW: Decision Matrix — rendered first in Why? dropdown
 # ─────────────────────────────────────────────────────────────────────────────
+def _is_short_term(buy_date: str | None) -> bool:
+    """
+    Check if stock was bought after April 1st of current year.
+    Short-term = bought in current FY (after April 1st)
+    """
+    if not buy_date:
+        return False
+    
+    try:
+        from datetime import datetime
+        
+        buy_dt = datetime.fromisoformat(str(buy_date)[:10])
+        current_year = datetime.now().year
+        fy_start = datetime(current_year, 4, 1)
+        return buy_dt >= fy_start
+    except Exception:
+        return False
+ 
+ 
+def _check_short_term_profit_rule(
+    held: bool,
+    term: str,
+    pnl: float,
+    buy_date: str | None
+) -> tuple[bool, str]:
+    """CUSTOM RULE 1: Force SELL if short-term profit >= ₹10,000"""
+    if not held or term != "SHORT":
+        return False, ""
+    
+    MIN_PROFIT = 10000.0
+    
+    if pnl >= MIN_PROFIT and _is_short_term(buy_date):
+        reason = (
+            f"🔥 CUSTOM RULE TRIGGERED: Short-term profit (₹{pnl:,.0f}) ≥ ₹10,000. "
+            f"Lock profit now before tax year-end to secure gains at 20% STCG."
+        )
+        return True, reason
+    
+    return False, ""
+ 
+ 
+def _check_low_price_buy_more_rule(
+    held: bool,
+    avg_cost: float,
+    ltp: float,
+    price_levels: dict
+) -> tuple[bool, str]:
+    """CUSTOM RULE 2: Suggest BUY MORE if underwater + at 10% lowest"""
+    if not held or ltp <= 0 or avg_cost <= 0:
+        return False, ""
+    
+    if ltp >= avg_cost:  # Not underwater
+        return False, ""
+    
+    low_1m = float(price_levels.get("low_1m", 0) or 0)
+    low_3m = float(price_levels.get("low_3m", 0) or 0)
+    low_6m = float(price_levels.get("low_6m", 0) or 0)
+    low_52w = float(price_levels.get("low_52w", 0) or 0)
+    
+    period_lows = [x for x in [low_1m, low_3m, low_6m, low_52w] if x > 0]
+    if not period_lows:
+        return False, ""
+    
+    lowest_price = min(period_lows)
+    price_threshold = lowest_price * 1.10
+    
+    if ltp <= price_threshold:
+        discount_pct = round((avg_cost - ltp) / avg_cost * 100, 1)
+        reason = (
+            f"💰 CUSTOM RULE TRIGGERED: Price ₹{ltp:,.2f} is at 10% LOWEST of recent periods "
+            f"(lowest: ₹{lowest_price:,.2f}). Position underwater by {discount_pct}%. "
+            f"Strong buying opportunity to average down."
+        )
+        return True, reason
+    
+    return False, ""
 
 def _render_decision_matrix(symbol: str, impact: dict, intel: dict, entity_id: int):
     """
@@ -265,125 +341,182 @@ def _render_decision_matrix(symbol: str, impact: dict, intel: dict, entity_id: i
     verdict_emoji  = "⏳"
     action_lines   = []
     rule_text      = ""
-
+ 
     has_corp_event = bool(corp_events)
-
-    # Sanity flags on the external analyst's trading-plan numbers — these can
-    # be stale/inconsistent (e.g. sell_target_1 below avg cost, or below
-    # buy_target_1 / current price), which previously caused nonsensical
-    # verdicts like "BOOK PROFIT" while sitting on a loss, or a "BUY TRIGGER"
-    # whose sell target guarantees a loss.
-    sell_target_valid = (
-        sell_t1 > 0
-        and (buy_t1 <= 0 or sell_t1 > buy_t1)
-        and (ltp <= 0 or sell_t1 > ltp)
+ 
+    # ═════════════════════════════════════════════════════════════════════════
+    # 🔥 CUSTOM RULE 1: Force SELL if short-term profit >= ₹10,000
+    # ═════════════════════════════════════════════════════════════════════════
+    force_sell, force_sell_reason = _check_short_term_profit_rule(
+        held=held,
+        term=term,
+        pnl=pnl,
+        buy_date=intel.get("buy_date")
     )
-    is_actually_profitable = held and avg_cost > 0 and ltp > avg_cost
-
-    if ltp > 0 and buy_sl > 0 and ltp < buy_sl:
-        verdict       = "CUT LOSS — EXIT NOW"
-        verdict_color = "#d50000"
-        verdict_emoji = "🚨"
-        loss_val      = round((ltp - avg_cost) * qty, 2) if held else 0
-        action_lines  = [
-            f"Price ₹{ltp:,.2f} has broken below your Stop Loss (₹{buy_sl:,.2f}).",
-            f"Holding further risks deeper losses. Your current loss: ₹{abs(loss_val):,.0f}.",
-            "**Rule:** Exit at market price. Do not average down into a broken stock.",
-        ]
-        rule_text = f"EXIT if price < ₹{buy_sl:,.2f} → Rule triggered."
-
-    elif ltp > 0 and sell_t1 > 0 and ltp >= sell_t1 and held and is_actually_profitable:
-        verdict       = "BOOK PROFIT — CONSIDER SELLING"
+    
+    if force_sell:
+        verdict       = "🔥 BOOK PROFIT — LOCK IN GAINS NOW"
         verdict_color = "#00c853"
         verdict_emoji = "✅"
-        profit_val    = round((ltp - avg_cost) * qty, 2) if held else 0
+        profit_val    = pnl
         action_lines  = [
-            f"Price ₹{ltp:,.2f} has reached/exceeded your Sell Target 1 (₹{sell_t1:,.2f}).",
-            f"You are sitting on a profit of ₹{profit_val:,.0f} ({pnl_pct:+.1f}%).",
-            "**Rule:** You can book partial or full profits here. If you hold, move stop-loss up to protect gains.",
+            f"Your short-term profit: ₹{profit_val:,.0f} ({pnl_pct:+.1f}%)",
+            force_sell_reason,
+            f"At current price ₹{ltp:,.2f}, you're locking profit with only 20% short-term tax.",
+            f"If price drops, losses will also suffer 20% tax — capture gains NOW.",
+            f"**Action:** Place a SELL order at market price or ₹{ltp:,.2f} limit.",
         ]
-        rule_text = f"SELL at ₹{sell_t1:,.2f} → Rule triggered."
-
-    elif ltp > 0 and sell_t1 > 0 and ltp >= sell_t1 and held and not is_actually_profitable:
-        # Analyst's sell target was hit, but you're still underwater on this
-        # position — this is NOT a profit-booking moment. Be explicit.
-        verdict       = "STILL AT A LOSS — DO NOT 'BOOK PROFIT'"
-        verdict_color = "#ff6d00"
-        verdict_emoji = "⚠️"
-        loss_val      = round((ltp - avg_cost) * qty, 2)
-        action_lines  = [
-            f"The generic analyst Sell Target (₹{sell_t1:,.2f}) has been hit, but your avg cost is ₹{avg_cost:,.2f} — "
-            f"you are still down ₹{abs(loss_val):,.0f} ({pnl_pct:+.1f}%).",
-            "The analyst's target was set for a different entry point — it does not apply to your position.",
-            f"**Rule:** Your real break-even is ₹{avg_cost:,.2f}. Don't sell into a loss based on a generic target.",
-        ]
-        rule_text = "Analyst target ≠ your break-even. Ignore for sell decisions."
-
-    elif ltp > 0 and buy_t1 > 0 and ltp <= buy_t1 and not held and sell_target_valid:
-        verdict       = "BUY TRIGGER HIT"
-        verdict_color = "#69f0ae"
-        verdict_emoji = "🟢"
-        upside_pct    = round((sell_t1 - ltp) / ltp * 100, 1) if ltp > 0 else 0
-        action_lines  = [
-            f"Price ₹{ltp:,.2f} is at or below Buy Target 1 (₹{buy_t1:,.2f}).",
-            f"Stop Loss if you buy: ₹{buy_sl:,.2f} ({round((buy_sl - ltp) / ltp * 100, 1) if ltp > 0 else 0:.1f}% below).",
-            f"If you buy now and it reaches Sell Target ₹{sell_t1:,.2f}, potential upside is {upside_pct:+.1f}%.",
-            "**Rule:** Enter if momentum + volume confirm. Check confidence score ≥ 3/5 before entering.",
-        ]
-        rule_text = f"BUY at ₹{buy_t1:,.2f} → Rule triggered."
-
-    elif ltp > 0 and buy_t1 > 0 and ltp <= buy_t1 and not held and not sell_target_valid:
-        # Buy condition met but the analyst's sell target is broken (below
-        # buy target or below current price) — don't issue a clean BUY call.
-        verdict       = "BUY LEVEL HIT — TARGET DATA UNRELIABLE"
-        verdict_color = "#ffd740"
-        verdict_emoji = "⚠️"
-        action_lines  = [
-            f"Price ₹{ltp:,.2f} is at or below Buy Target 1 (₹{buy_t1:,.2f}), normally a buy signal.",
-            f"However, the analyst's Sell Target (₹{sell_t1:,.2f}) is below your entry/current price — "
-            f"that math implies a guaranteed loss, so the target data can't be trusted right now.",
-            "**Rule:** Do not enter on this signal alone. Check the Analyst tab manually before acting.",
-        ]
-        rule_text = "Sell target inconsistent with buy target/price — verdict downgraded."
-
-    elif has_corp_event:
-        verdict       = "HOLD — CORPORATE EVENT PENDING"
-        verdict_color = "#ff9800"
-        verdict_emoji = "📅"
-        ev = corp_events[0]
-        action_lines  = [
-            f"Upcoming {ev.get('action_type','event')} on {_safe_date(ev.get('ex_date',''))}.",
-            "On ex-date, price typically drops by the dividend amount.",
-            "**Rule:** Do not open new option positions until after the ex-date. Existing sold CEs may go ITM if the drop is large.",
-        ]
-        rule_text = "Wait until after corporate event before acting."
-
-    else:
-        # Default: price between SL and target → wait
-        verdict       = "WAIT FOR TRIGGER"
-        verdict_color = "#ffd740"
-        verdict_emoji = "⏳"
-        if held and avg_cost > 0 and ltp > 0:
-            below_cost   = round((avg_cost - ltp) / avg_cost * 100, 1)
-            to_breakeven = round(avg_cost - ltp, 2)
-            action_lines = [
+        rule_text = "🔥 SHORT-TERM PROFIT LOCK RULE TRIGGERED"
+    
+    # ═════════════════════════════════════════════════════════════════════════
+    # 💰 CUSTOM RULE 2: Suggest BUY MORE if underwater + at 10% lowest
+    # ═════════════════════════════════════════════════════════════════════════
+    elif held and avg_cost > 0 and ltp < avg_cost:
+        buy_more, buy_more_reason = _check_low_price_buy_more_rule(
+            held=held,
+            avg_cost=avg_cost,
+            ltp=ltp,
+            price_levels=price_levels
+        )
+        
+        if buy_more:
+            verdict       = "💰 BUY MORE — STRONG AVERAGING OPPORTUNITY"
+            verdict_color = "#69f0ae"
+            verdict_emoji = "📈"
+            max_loss      = round((avg_cost - ltp) / avg_cost * 100, 1)
+            action_lines  = [
+                f"Current position: avg cost ₹{avg_cost:,.2f}, current ₹{ltp:,.2f} ({-max_loss:.1f}%)",
+                buy_more_reason,
+                "**Action Plan:**",
+                f"1. Calculate max shares: ₹XX budget ÷ ₹{ltp:,.2f} = shares to buy",
+                f"2. Buy at ₹{ltp:,.2f} or lower to bring down average cost",
+                f"3. New breakeven after averaging will be closer to current price",
+            ]
+            rule_text = "💰 LOW PRICE + UNDERWATER RULE TRIGGERED"
+        else:
+            verdict       = "WAIT FOR TRIGGER"
+            verdict_color = "#ffd740"
+            verdict_emoji = "⏳"
+            below_cost    = round((avg_cost - ltp) / avg_cost * 100, 1)
+            to_breakeven  = round(avg_cost - ltp, 2)
+            action_lines  = [
                 f"You hold {int(qty):,} shares at avg cost ₹{avg_cost:,.2f}. Current: ₹{ltp:,.2f} ({pnl_pct:+.1f}%).",
                 f"You need price to rise ₹{to_breakeven:,.2f} ({below_cost:.1f}%) to break even.",
             ]
             if buy_sl > 0:
                 action_lines.append(f"**Sell Rule:** Exit if price drops below ₹{buy_sl:,.2f} (stop loss).")
-            if buy_t1 > 0 and buy_t1 > ltp:
-                action_lines.append(f"**Buy More Rule:** Average down only if price hits ₹{buy_t1:,.2f} AND confidence ≥ 3/5.")
-        elif buy_t1 > 0 and buy_sl > 0:
-            action_lines = [
-                f"Price ₹{ltp:,.2f} is between Buy Trigger (₹{buy_t1:,.2f}) and Stop Loss (₹{buy_sl:,.2f}).",
-                f"No position — nothing to do yet. Set an alert for ₹{buy_t1:,.2f}.",
+    
+    # ═════════════════════════════════════════════════════════════════════════
+    # STANDARD ANALYST-BASED RULES (if custom rules didn't trigger)
+    # ═════════════════════════════════════════════════════════════════════════
+    elif not force_sell:
+        
+        sell_target_valid = (
+            sell_t1 > 0
+            and (buy_t1 <= 0 or sell_t1 > buy_t1)
+            and (ltp <= 0 or sell_t1 > ltp)
+        )
+        is_actually_profitable = held and avg_cost > 0 and ltp > avg_cost
+ 
+        if ltp > 0 and buy_sl > 0 and ltp < buy_sl:
+            verdict       = "CUT LOSS — EXIT NOW"
+            verdict_color = "#d50000"
+            verdict_emoji = "🚨"
+            loss_val      = round((ltp - avg_cost) * qty, 2) if held else 0
+            action_lines  = [
+                f"Price ₹{ltp:,.2f} has broken below your Stop Loss (₹{buy_sl:,.2f}).",
+                f"Holding further risks deeper losses. Your current loss: ₹{abs(loss_val):,.0f}.",
+                "**Rule:** Exit at market price. Do not average down into a broken stock.",
             ]
-            rule_text = f"Enter only when price ≤ ₹{buy_t1:,.2f}."
+            rule_text = f"EXIT if price < ₹{buy_sl:,.2f} → Rule triggered."
+ 
+        elif ltp > 0 and sell_t1 > 0 and ltp >= sell_t1 and held and is_actually_profitable:
+            verdict       = "BOOK PROFIT — CONSIDER SELLING"
+            verdict_color = "#00c853"
+            verdict_emoji = "✅"
+            profit_val    = round((ltp - avg_cost) * qty, 2) if held else 0
+            action_lines  = [
+                f"Price ₹{ltp:,.2f} has reached/exceeded your Sell Target 1 (₹{sell_t1:,.2f}).",
+                f"You are sitting on a profit of ₹{profit_val:,.0f} ({pnl_pct:+.1f}%).",
+                "**Rule:** You can book partial or full profits here. If you hold, move stop-loss up to protect gains.",
+            ]
+            rule_text = f"SELL at ₹{sell_t1:,.2f} → Rule triggered."
+ 
+        elif ltp > 0 and sell_t1 > 0 and ltp >= sell_t1 and held and not is_actually_profitable:
+            verdict       = "STILL AT A LOSS — DO NOT 'BOOK PROFIT'"
+            verdict_color = "#ff6d00"
+            verdict_emoji = "⚠️"
+            loss_val      = round((ltp - avg_cost) * qty, 2)
+            action_lines  = [
+                f"The generic analyst Sell Target (₹{sell_t1:,.2f}) has been hit, but your avg cost is ₹{avg_cost:,.2f} — "
+                f"you are still down ₹{abs(loss_val):,.0f} ({pnl_pct:+.1f}%).",
+                "The analyst's target was set for a different entry point — it does not apply to your position.",
+                f"**Rule:** Your real break-even is ₹{avg_cost:,.2f}. Don't sell into a loss based on a generic target.",
+            ]
+            rule_text = "Analyst target ≠ your break-even. Ignore for sell decisions."
+ 
+        elif ltp > 0 and buy_t1 > 0 and ltp <= buy_t1 and not held and sell_target_valid:
+            verdict       = "BUY TRIGGER HIT"
+            verdict_color = "#69f0ae"
+            verdict_emoji = "🟢"
+            upside_pct    = round((sell_t1 - ltp) / ltp * 100, 1) if ltp > 0 else 0
+            action_lines  = [
+                f"Price ₹{ltp:,.2f} is at or below Buy Target 1 (₹{buy_t1:,.2f}).",
+                f"Stop Loss if you buy: ₹{buy_sl:,.2f} ({round((buy_sl - ltp) / ltp * 100, 1) if ltp > 0 else 0:.1f}% below).",
+                f"If you buy now and it reaches Sell Target ₹{sell_t1:,.2f}, potential upside is {upside_pct:+.1f}%.",
+                "**Rule:** Enter if momentum + volume confirm. Check confidence score ≥ 3/5 before entering.",
+            ]
+            rule_text = f"BUY at ₹{buy_t1:,.2f} → Rule triggered."
+ 
+        elif ltp > 0 and buy_t1 > 0 and ltp <= buy_t1 and not held and not sell_target_valid:
+            verdict       = "BUY LEVEL HIT — TARGET DATA UNRELIABLE"
+            verdict_color = "#ffd740"
+            verdict_emoji = "⚠️"
+            action_lines  = [
+                f"Price ₹{ltp:,.2f} is at or below Buy Target 1 (₹{buy_t1:,.2f}), normally a buy signal.",
+                f"However, the analyst's Sell Target (₹{sell_t1:,.2f}) is below your entry/current price — "
+                f"that math implies a guaranteed loss, so the target data can't be trusted right now.",
+                "**Rule:** Do not enter on this signal alone. Check the Analyst tab manually before acting.",
+            ]
+            rule_text = "Sell target inconsistent with buy target/price — verdict downgraded."
+ 
+        elif has_corp_event:
+            verdict       = "HOLD — CORPORATE EVENT PENDING"
+            verdict_color = "#ff9800"
+            verdict_emoji = "📅"
+            ev = corp_events[0]
+            action_lines  = [
+                f"Upcoming {ev.get('action_type','event')} on {_safe_date(ev.get('ex_date',''))}.",
+                "On ex-date, price typically drops by the dividend amount.",
+                "**Rule:** Do not open new option positions until after the ex-date. Existing sold CEs may go ITM if the drop is large.",
+            ]
+            rule_text = "Wait until after corporate event before acting."
+ 
         else:
-            action_lines = [
-                "Insufficient data to generate a specific trigger. Review the Analyst tab for signals.",
-            ]
+            verdict       = "WAIT FOR TRIGGER"
+            verdict_color = "#ffd740"
+            verdict_emoji = "⏳"
+            if held and avg_cost > 0 and ltp > 0:
+                below_cost   = round((avg_cost - ltp) / avg_cost * 100, 1)
+                to_breakeven = round(avg_cost - ltp, 2)
+                action_lines = [
+                    f"You hold {int(qty):,} shares at avg cost ₹{avg_cost:,.2f}. Current: ₹{ltp:,.2f} ({pnl_pct:+.1f}%).",
+                    f"You need price to rise ₹{to_breakeven:,.2f} ({below_cost:.1f}%) to break even.",
+                ]
+                if buy_sl > 0:
+                    action_lines.append(f"**Sell Rule:** Exit if price drops below ₹{buy_sl:,.2f} (stop loss).")
+                if buy_t1 > 0 and buy_t1 > ltp:
+                    action_lines.append(f"**Buy More Rule:** Average down only if price hits ₹{buy_t1:,.2f} AND confidence ≥ 3/5.")
+            elif buy_t1 > 0 and buy_sl > 0:
+                action_lines = [
+                    f"Price ₹{ltp:,.2f} is between Buy Trigger (₹{buy_t1:,.2f}) and Stop Loss (₹{buy_sl:,.2f}).",
+                    f"No position — nothing to do yet. Set an alert for ₹{buy_t1:,.2f}.",
+                ]
+                rule_text = f"Enter only when price ≤ ₹{buy_t1:,.2f}."
+            else:
+                action_lines = [
+                    "Insufficient data to generate a specific trigger. Review the Analyst tab for signals.",
+                ]
 
     # ── Render verdict card ─────────────────────────────────────────────────
     st.markdown(

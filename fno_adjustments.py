@@ -3,13 +3,14 @@ routers/fno_adjustments.py
 ============================
 REST endpoints for the dividend-forced F&O adjustment engine.
 """
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 import asyncio
 
-from database import SessionLocal
-from dependencies.auth import get_current_account
-from services.fno_dividend_adjustment_service import (
+from backend.database import SessionLocal
+from backend.dependencies.auth import get_current_account
+from backend.services.fno_dividend_adjustment_service import (
     detect_pending_adjustments,
     apply_adjustment,
     skip_adjustment,

@@ -1,17 +1,18 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from database import SessionLocal
-from models import User
+from backend.database import SessionLocal
+from backend.models import User
 from pydantic import BaseModel
 from sqlalchemy import text
-from dependencies.auth import get_current_account
-from services.task_status import start_task, finish_task
+from backend.dependencies.auth import get_current_account
+from backend.services.task_status import start_task, finish_task
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Users"])
+
 
 def get_db():
     db = SessionLocal()
@@ -20,9 +21,11 @@ def get_db():
     finally:
         db.close()
 
+
 class UserCreate(BaseModel):
     username: str
     broker: str
+
 
 class UserOut(BaseModel):
     id: int
@@ -32,6 +35,7 @@ class UserOut(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 @router.post("/users/", response_model=UserOut)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
@@ -44,8 +48,11 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(new_user)
     return new_user
 
+
 @router.get("/users/")
-def list_users(account_id: int = Depends(get_current_account), db: Session = Depends(get_db)):
+def list_users(
+    account_id: int = Depends(get_current_account), db: Session = Depends(get_db)
+):
     return db.query(User).filter(User.account_id == account_id).all()
 
 
@@ -67,9 +74,9 @@ _USER_CLEANUP_TABLES = [
     "ledger_entries",
     "ledger_period_summaries",
     "corporate_actions",
-    "group_members",          # references user_id
-    "wishlist",                # if this table exists in your schema
-    "wishlist_items",           # covers either naming — harmless if missing
+    "group_members",  # references user_id
+    "wishlist",  # if this table exists in your schema
+    "wishlist_items",  # covers either naming — harmless if missing
 ]
 
 
@@ -82,7 +89,10 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
       - a task-status guard stops two delete clicks from racing
     """
     if not start_task(user_id, "delete_user", "Deleting user and related data..."):
-        return {"status": "busy", "message": "A delete is already in progress for this user."}
+        return {
+            "status": "busy",
+            "message": "A delete is already in progress for this user.",
+        }
 
     errors: list[str] = []
     try:
@@ -97,7 +107,9 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
 
         for table in _USER_CLEANUP_TABLES:
             try:
-                db.execute(text(f"DELETE FROM {table} WHERE user_id = :uid"), {"uid": user_id})
+                db.execute(
+                    text(f"DELETE FROM {table} WHERE user_id = :uid"), {"uid": user_id}
+                )
                 db.commit()
             except Exception as e:
                 db.rollback()
@@ -112,7 +124,9 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
         except Exception as e:
             db.rollback()
             finish_task(user_id, "delete_user", error=str(e))
-            raise HTTPException(status_code=500, detail=f"Could not delete user row: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Could not delete user row: {e}"
+            )
 
         finish_task(user_id, "delete_user")
         return {

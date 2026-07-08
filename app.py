@@ -34,6 +34,16 @@ from api_client import (
         skip_fno_adjustment,
         get_adjustment_history,
 )
+from backend.services.engine import (
+    get_fy_list, 
+    get_fy_realized_pnl, 
+    get_fy_realized_pnl_summary,
+    get_fy_intraday,
+    get_fy_intraday_summary,
+    get_fy_transactions,
+    get_fy_transactions_summary,
+    get_fy_summary
+)
 from be_graph_utils import extract_legs_from_op_df, build_be_figure
 import pandas as pd
 
@@ -1662,25 +1672,44 @@ else:
                     # ══════════════════════════════════════════════════════════
                     # SECTION 2 — INTRADAY TRADES  (day-trading summary)
                     # ══════════════════════════════════════════════════════════
-                    st.subheader("⚡ Intraday Trades — Today's Activity")
+                    st.subheader("⚡ Intraday Trades — FY Snapshot")
+                    
+                    # FY Selector
+                    fy_list = get_fy_list(current_year=date.today().year, years_back=10)
+                    fy_options = [fy["fy_label"] for fy in fy_list]
+                    sel_fy_intraday = st.selectbox(
+                        "Select FY (Intraday)", 
+                        fy_options, 
+                        key="fy_select_intraday"
+                    )
+                    
+                    # Get FY end date for selected FY
+                    sel_fy_data = next(fy for fy in fy_list if fy["fy_label"] == sel_fy_intraday)
+                    fy_end_intraday = sel_fy_data["end_date"]
+                    
                     if st.button("🔄 Refresh Intraday", key="intraday_refresh_pnl"):
-                        st.session_state.pop("intraday_data", None)
-                    intra = _lazy("intraday_data", get_intraday, selected_user["id"])
-                    if intra:
+                        st.session_state.pop(f"intraday_data_fy_{fy_end_intraday}", None)
+                    
+                    _intra_key = f"intraday_data_fy_{fy_end_intraday}_{selected_user['id']}"
+                    intra = _lazy(_intra_key, get_fy_intraday, selected_user["id"], fy_end_intraday)
+                    intra_summary = _lazy(f"intraday_summary_fy_{fy_end_intraday}_{selected_user['id']}", 
+                                         get_fy_intraday_summary, selected_user["id"], fy_end_intraday)
+                    
+                    if intra is not None and len(intra) > 0:
                         idf = pd.DataFrame(intra)
-
+                        
                         # ── Intraday summary metrics ──────────────────────────
-                        _idf_raw = idf.copy()
-                        _idf_raw["gross_pnl"] = pd.to_numeric(_idf_raw["gross_pnl"], errors="coerce").fillna(0)
-                        _total_intra     = _idf_raw["gross_pnl"].sum()
-                        _winning_trades  = (_idf_raw["gross_pnl"] > 0).sum()
-                        _losing_trades   = (_idf_raw["gross_pnl"] < 0).sum()
-                        _total_trades    = len(_idf_raw)
-                        _win_rate        = round(_winning_trades / _total_trades * 100) if _total_trades else 0
-
+                        _total_intra = intra_summary.get("total_intraday_pnl", 0)
+                        _winning_trades = intra_summary.get("winning_intraday", 0)
+                        _losing_trades = intra_summary.get("losing_intraday", 0)
+                        _total_trades = intra_summary.get("num_intraday_trades", 0)
+                        _win_rate = intra_summary.get("intraday_win_rate", 0)
+                        _best_trade = intra_summary.get("best_intraday", 0)
+                        
                         _ic1, _ic2, _ic3, _ic4 = st.columns(4)
-                        _isign  = "+" if _total_intra >= 0 else ""
+                        _isign = "+" if _total_intra >= 0 else ""
                         _icolor = "#6fcf97" if _total_intra >= 0 else "#f48fb1"
+                        
                         _ic1.markdown(
                             f"<div style='background:#1a1a2e;padding:12px;border-radius:8px;"
                             f"border-left:4px solid {_icolor};'>"
@@ -1690,24 +1719,23 @@ else:
                             unsafe_allow_html=True
                         )
                         _ic2.metric("Total Trades", _total_trades)
-                        _ic3.metric("Win Rate", f"{_win_rate}%",
-                                    delta=f"W:{_winning_trades} L:{_losing_trades}")
-                        _ic4.metric("Best Trade",
-                                    fmt_inr(_idf_raw["gross_pnl"].max()) if _total_trades else "—")
-
+                        _ic3.metric("Win Rate", f"{_win_rate}%", 
+                                   delta=f"W:{_winning_trades} L:{_losing_trades}")
+                        _ic4.metric("Best Trade", f"₹{_best_trade:,.0f}")
+                        
                         st.markdown("")
-
+                        
                         # ── Full intraday table ────────────────────────────────
-                        idf_disp = idf[["trade_date", "symbol", "quantity", "buy_price", "sell_price", "gross_pnl"]].copy()
+                        idf_disp = idf.copy()
                         idf_disp.columns = ["Date", "Symbol", "Qty", "Buy (₹)", "Sell (₹)", "P&L (₹)"]
-                        idf_disp["Buy (₹)"]  = pd.to_numeric(idf_disp["Buy (₹)"],  errors="coerce").apply(
+                        idf_disp["Buy (₹)"] = pd.to_numeric(idf_disp["Buy (₹)"], errors="coerce").apply(
                             lambda v: fmt_inr(v).lstrip("₹") if pd.notna(v) else "—")
                         idf_disp["Sell (₹)"] = pd.to_numeric(idf_disp["Sell (₹)"], errors="coerce").apply(
                             lambda v: fmt_inr(v).lstrip("₹") if pd.notna(v) else "—")
-
-                        _raw_pnl = pd.to_numeric(idf["gross_pnl"], errors="coerce").fillna(0)
+                        
+                        _raw_pnl = pd.to_numeric(idf["P&L (₹)"], errors="coerce").fillna(0)
                         idf_disp["P&L (₹)"] = _raw_pnl.apply(lambda v: f"₹{v:+,.2f}")
-
+                        
                         def _color_intra_pnl(val):
                             try:
                                 v = float(str(val).replace("₹","").replace(",",""))
@@ -1716,41 +1744,65 @@ else:
                             except Exception:
                                 pass
                             return ""
-
+                        
                         try:
                             idf_styled = idf_disp.style.map(_color_intra_pnl, subset=["P&L (₹)"])
                         except AttributeError:
                             idf_styled = idf_disp.style.applymap(_color_intra_pnl, subset=["P&L (₹)"])
-
+                        
                         st.dataframe(idf_styled, use_container_width=True, hide_index=True)
                         st.caption(
-                            "💡 Intraday = buy and sell of the same stock on the same day. "
+                            f"💡 Intraday trades in {sel_fy_intraday} (as of {fy_end_intraday}). "
                             "P&L shown is gross (before brokerage & taxes)."
                         )
                     else:
-                        st.info("No intraday trades found.")
-
+                        st.info(f"No intraday trades found in {sel_fy_intraday}.")
+                    
                     st.divider()
 
                     # ══════════════════════════════════════════════════════════
                     # SECTION 3 — REALIZED P&L  (historical closed positions)
                     # ══════════════════════════════════════════════════════════
-                    st.subheader("📈 Realized P&L — Closed Positions")
+                   
+                    st.subheader("📈 Realized P&L — FY Snapshot")
+                    
+                    # FY Selector
+                    fy_list = get_fy_list(current_year=date.today().year, years_back=10)
+                    fy_options = [fy["fy_label"] for fy in fy_list]
+                    sel_fy_pnl = st.selectbox(
+                        "Select FY (Realized P&L)", 
+                        fy_options, 
+                        key="fy_select_pnl"
+                    )
+                    
+                    # Get FY end date for selected FY
+                    sel_fy_data = next(fy for fy in fy_list if fy["fy_label"] == sel_fy_pnl)
+                    fy_end_pnl = sel_fy_data["end_date"]
+                    
                     if st.button("Refresh P&L", key="pnl_refresh_btn"):
-                        st.session_state.pop("pnl_data", None)
-                    data = _lazy("pnl_data", get_pnl, selected_user["id"])
-                    if data:
+                        st.session_state.pop(f"pnl_data_fy_{fy_end_pnl}", None)
+                    
+                    _pnl_key = f"pnl_data_fy_{fy_end_pnl}_{selected_user['id']}"
+                    data = _lazy(_pnl_key, get_fy_realized_pnl, selected_user["id"], fy_end_pnl)
+                    pnl_summary = _lazy(f"pnl_summary_fy_{fy_end_pnl}_{selected_user['id']}", 
+                                       get_fy_realized_pnl_summary, selected_user["id"], fy_end_pnl)
+                    
+                    if data is not None and len(data) > 0:
                         df = pd.DataFrame(data)
-
+                        
                         # ── Realized P&L summary metrics ──────────────────────
-                        _rdf = df.copy()
-                        _rdf["gross_pnl"] = pd.to_numeric(_rdf["gross_pnl"], errors="coerce").fillna(0)
-                        _rdf["net_pnl"]   = pd.to_numeric(_rdf["net_pnl"],   errors="coerce").fillna(0)
-                        _total_gross = _rdf["gross_pnl"].sum()
-                        _total_net   = _rdf["net_pnl"].sum()
+                        _total_gross = pnl_summary.get("total_gross_pnl", 0)
+                        _total_net = pnl_summary.get("total_net_pnl", 0)
+                        _num_trades = pnl_summary.get("num_trades", 0)
+                        _winning = pnl_summary.get("winning_trades", 0)
+                        _losing = pnl_summary.get("losing_trades", 0)
+                        _avg_profit = pnl_summary.get("avg_profit", 0)
+                        _avg_loss = pnl_summary.get("avg_loss", 0)
+                        
                         _rp1, _rp2, _rp3 = st.columns(3)
-                        _rsign  = "+" if _total_gross >= 0 else ""
+                        _rsign = "+" if _total_gross >= 0 else ""
                         _rcolor = "#6fcf97" if _total_gross >= 0 else "#f48fb1"
+                        
                         _rp1.markdown(
                             f"<div style='background:#1a1a2e;padding:12px;border-radius:8px;"
                             f"border-left:4px solid {_rcolor};'>"
@@ -1760,13 +1812,20 @@ else:
                             unsafe_allow_html=True
                         )
                         _rp2.metric("Net P&L (after tax)", fmt_inr(_total_net))
-                        _rp3.metric("Closed Positions", len(_rdf))
-
+                        _rp3.metric("Closed Positions", _num_trades)
+                        
                         st.markdown("")
-
-                        df_r = df[["sell_date", "symbol", "quantity", "buy_price", "sell_price", "gross_pnl", "tax_amount", "net_pnl"]].copy()
-                        df_r.columns = ["Sell Date", "Symbol", "Qty", "Buy Price", "Sell Price", "Gross P&L", "Tax", "Net P&L"]
-
+                        
+                        # Additional metrics row
+                        _rp4, _rp5, _rp6 = st.columns(3)
+                        _rp4.metric("Winning Trades", _winning)
+                        _rp5.metric("Losing Trades", _losing)
+                        _rp6.metric("Win Rate", f"{round(_winning/_num_trades*100) if _num_trades > 0 else 0}%")
+                        
+                        st.markdown("")
+                        
+                        df_r = df.copy()
+                        
                         def _color_realized(val):
                             try:
                                 v = float(str(val).replace(",",""))
@@ -1775,7 +1834,7 @@ else:
                             except Exception:
                                 pass
                             return ""
-
+                        
                         try:
                             df_r_styled = df_r.style \
                                 .map(_color_realized, subset=["Gross P&L"]) \
@@ -1784,11 +1843,71 @@ else:
                             df_r_styled = df_r.style \
                                 .applymap(_color_realized, subset=["Gross P&L"]) \
                                 .applymap(_color_realized, subset=["Net P&L"])
-
+                        
                         st.dataframe(df_r_styled, use_container_width=True)
+                        st.caption(f"📊 Realized P&L data for {sel_fy_pnl} (as of {fy_end_pnl})")
                     else:
-                        st.info("No realized P&L yet. Sell a stock to see it here.")
-
+                        st.info(f"No realized P&L found in {sel_fy_pnl}.")
+                
+                    st.divider()
+                    
+                    st.subheader("🔁 Transactions — FY Snapshot")
+                    
+                    # FY Selector
+                    fy_list = get_fy_list(current_year=date.today().year, years_back=10)
+                    fy_options = [fy["fy_label"] for fy in fy_list]
+                    sel_fy_txn = st.selectbox(
+                        "Select FY (Transactions)", 
+                        fy_options, 
+                        key="fy_select_txn"
+                    )
+                    
+                    # Get FY end date for selected FY
+                    sel_fy_data = next(fy for fy in fy_list if fy["fy_label"] == sel_fy_txn)
+                    fy_end_txn = sel_fy_data["end_date"]
+                    
+                    # Segment filter
+                    txn_segment = st.selectbox("Segment", ["All", "EQ", "FNO"], key="txn_segment")
+                    seg_param = None if txn_segment == "All" else txn_segment
+                    
+                    if st.button("Refresh Transactions", key="fy_txn_refresh_btn"):
+                        st.session_state.pop(f"txn_data_fy_{fy_end_txn}", None)
+                    
+                    _txn_key = f"txn_data_fy_{fy_end_txn}_{selected_user['id']}"
+                    txn_data = _lazy(_txn_key, get_fy_transactions, selected_user["id"], fy_end_txn, seg_param)
+                    txn_summary = _lazy(f"txn_summary_fy_{fy_end_txn}_{selected_user['id']}", 
+                                       get_fy_transactions_summary, selected_user["id"], fy_end_txn, seg_param)
+                    
+                    if txn_data is not None and len(txn_data) > 0:
+                        txn_df = pd.DataFrame(txn_data)
+                        
+                        # ── Transaction summary metrics ──────────────────────
+                        _total_txn = txn_summary.get("total_transactions", 0)
+                        _total_buys = txn_summary.get("total_buys", 0)
+                        _total_sells = txn_summary.get("total_sells", 0)
+                        _buy_value = txn_summary.get("total_buy_value", 0)
+                        _sell_value = txn_summary.get("total_sell_value", 0)
+                        
+                        _tx1, _tx2, _tx3, _tx4 = st.columns(4)
+                        _tx1.metric("Total Transactions", _total_txn)
+                        _tx2.metric("Buy Orders", _total_buys)
+                        _tx3.metric("Sell Orders", _total_sells)
+                        _tx4.metric("Net Invested", fmt_inr(_buy_value - _sell_value))
+                        
+                        st.markdown("")
+                        
+                        # Display transactions
+                        txn_disp = txn_df[["trade_date", "trade_type", "symbol", "quantity", "price", "exchange"]].copy()
+                        txn_disp.columns = ["Date", "Type", "Symbol", "Qty", "Price (₹)", "Exchange"]
+                        
+                        st.dataframe(txn_disp, use_container_width=True, hide_index=True)
+                        st.caption(f"📋 Transactions in {sel_fy_txn} ({txn_segment} segment) as of {fy_end_txn}")
+                    else:
+                        st.info(f"No transactions found in {sel_fy_txn} for {txn_segment} segment.")
+                
+                
+                
+                
                 # ── Tab 5: F&O Positions & P&L ─────────────────────────────────
 # ── Tab 5: F&O Positions & P&L ─────────────────────────────────────────────
 # REPLACE the entire `with tab5:` block in app.py with this code.

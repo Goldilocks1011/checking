@@ -18,8 +18,8 @@
 
 # from collections import defaultdict
 # from sqlalchemy import text
-# from database import SessionLocal
-# from services.nse_data_service import fetch_isin_from_nse, get_fno_info_from_nse, search_nse_symbol
+# from backend.database import SessionLocal
+# from backend.services.nse_data_service import fetch_isin_from_nse, get_fno_info_from_nse, search_nse_symbol
 
 
 # # ─────────────────────────────────────────────────────────────────────────────
@@ -222,14 +222,14 @@
 
 #     # ── Step 1: ScripMaster DB ────────────────────────────────────────────────
 #     try:
-#         from services.scrip_master_db import is_db_populated, query_isin
+#         from backend.services.scrip_master_db import is_db_populated, query_isin
 #         if is_db_populated():
 #             isin = query_isin(s_try)
 #             if isin:
 #                 canonical = _ticker_from_isin(isin) or s_try
 #                 return isin, canonical
 #             # Also try canonical form
-#             from services.symbol_resolver import get_canonical
+#             from backend.services.symbol_resolver import get_canonical
 #             can = get_canonical(s_try)
 #             if can and can != s_try:
 #                 isin = query_isin(can)
@@ -240,12 +240,12 @@
 
 #     # ── Step 2: ScripMaster CSV in-memory ─────────────────────────────────────
 #     try:
-#         from services.isin_resolver import resolve_isin as csv_resolve, isin_to_canonical
+#         from backend.services.isin_resolver import resolve_isin as csv_resolve, isin_to_canonical
 #         isin = csv_resolve(s_try)
 #         if isin:
 #             can = isin_to_canonical(isin) or s_try
 #             return isin, can
-#         from services.symbol_resolver import get_canonical
+#         from backend.services.symbol_resolver import get_canonical
 #         can = get_canonical(s_try)
 #         if can and can != s_try:
 #             isin = csv_resolve(can)
@@ -258,7 +258,7 @@
 #     if company and len(company.strip()) > 4:
 #         co_up = company.strip().upper()
 #         try:
-#             from services.scrip_master_db import is_db_populated, query_isin
+#             from backend.services.scrip_master_db import is_db_populated, query_isin
 #             if is_db_populated():
 #                 isin = query_isin(co_up)
 #                 if isin:
@@ -267,7 +267,7 @@
 #         except Exception:
 #             pass
 #         try:
-#             from services.isin_resolver import resolve_isin as csv_resolve, isin_to_canonical
+#             from backend.services.isin_resolver import resolve_isin as csv_resolve, isin_to_canonical
 #             isin = csv_resolve(co_up)
 #             if isin:
 #                 can = isin_to_canonical(isin) or co_up
@@ -277,7 +277,7 @@
 
 #     # ── Step 4: NSE API (last resort) ─────────────────────────────────────────
 #     try:
-#         from services.symbol_resolver import get_canonical
+#         from backend.services.symbol_resolver import get_canonical
 #         can = get_canonical(s_try)
 #         isin = fetch_isin_from_nse(can)
 #         if not isin and can != s_try:
@@ -302,8 +302,8 @@
 #     if not isin:
 #         return ""
 #     try:
-#         from services.scrip_master_db import is_db_populated
-#         from database import SessionLocal
+#         from backend.services.scrip_master_db import is_db_populated
+#         from backend.database import SessionLocal
 #         from sqlalchemy import text as _text
 #         if is_db_populated():
 #             db = SessionLocal()
@@ -323,7 +323,7 @@
 #     except Exception:
 #         pass
 #     try:
-#         from services.isin_resolver import isin_to_canonical
+#         from backend.services.isin_resolver import isin_to_canonical
 #         return isin_to_canonical(isin)
 #     except Exception:
 #         pass
@@ -339,12 +339,12 @@
 
 #     # ── Step 1: DB ────────────────────────────────────────────────────────────
 #     try:
-#         from services.scrip_master_db import is_db_populated, query_fno_info
+#         from backend.services.scrip_master_db import is_db_populated, query_fno_info
 #         if is_db_populated():
 #             fno, lot = query_fno_info(s)
 #             if fno and lot > 1:
 #                 return True, lot
-#             from services.symbol_resolver import get_canonical
+#             from backend.services.symbol_resolver import get_canonical
 #             can = get_canonical(s)
 #             if can and can != s:
 #                 fno, lot = query_fno_info(can)
@@ -355,11 +355,11 @@
 
 #     # ── Step 2: ScripMaster CSV (engine_price_fetch) ──────────────────────────
 #     try:
-#         from services.engine_price_fetch import get_fno_info
+#         from backend.services.engine_price_fetch import get_fno_info
 #         fno, lot = get_fno_info(s)
 #         if fno and lot > 1:
 #             return True, lot
-#         from services.symbol_resolver import get_canonical
+#         from backend.services.symbol_resolver import get_canonical
 #         can = get_canonical(s)
 #         if can and can != s:
 #             fno, lot = get_fno_info(can)
@@ -381,7 +381,7 @@
 # # ─────────────────────────────────────────────────────────────────────────────
 
 # def auto_populate(user_id: int) -> dict:
-#     from services.symbol_resolver import get_canonical
+#     from backend.services.symbol_resolver import get_canonical
 
 #     db = SessionLocal()
 #     try:
@@ -687,25 +687,34 @@ KEY CHANGES vs v3:
     (HLDG. → HOLDINGS, MAHA. → MAHARASHTRA, etc.) — those are language-level
     normalizations, NOT stock-specific hardcoding.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
 from sqlalchemy import text
-from database import SessionLocal
-from services.nse_data_service import fetch_isin_from_nse, get_fno_info_from_nse, search_nse_symbol
+from backend.database import SessionLocal
+from backend.services.nse_data_service import (
+    fetch_isin_from_nse,
+    get_fno_info_from_nse,
+    search_nse_symbol,
+)
 import requests
 import logging
+
 logger = logging.getLogger(__name__)
-from services.scrip_master_db import upsert_scrip_master
+from backend.services.scrip_master_db import upsert_scrip_master
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ISIN resolution — 5-step pipeline (no hardcoded aliases)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _resolve_isin(raw_sym: str, company: str = "") -> tuple[str, str]:
     """
     Resolve raw broker symbol → (isin, canonical_ticker).
 
     Resolution pipeline:
+      Step 0  symbol_normalisation cache (new)
       Step 1  ScripMaster DB exact match (symbol_root / name / scrip_data)
               via query_isin()
       Step 2  ScripMaster DB normalized+fuzzy match (strips abbreviations,
@@ -725,15 +734,39 @@ def _resolve_isin(raw_sym: str, company: str = "") -> tuple[str, str]:
     def _ticker(isin: str) -> str:
         return _ticker_from_isin(isin) or s
 
+    # ── Step 0: check symbol_normalisation cache ──────────────────────────────
+    try:
+        from backend.database import SessionLocal
+
+        db = SessionLocal()
+        row = db.execute(
+            text(
+                "SELECT canonical_symbol FROM symbol_normalisation WHERE raw_symbol = :sym"
+            ),
+            {"sym": s},
+        ).first()
+        db.close()
+        if row and row.canonical_symbol:
+            # try exact ISIN resolution from the cached canonical
+            from backend.services.scrip_master_db import query_isin
+
+            isin = query_isin(row.canonical_symbol)
+            if isin:
+                return isin, row.canonical_symbol
+    except Exception:
+        pass
+
     # ── Step 1: ScripMaster DB — exact match ──────────────────────────────────
     try:
-        from services.scrip_master_db import is_db_populated, query_isin
+        from backend.services.scrip_master_db import is_db_populated, query_isin
+
         if is_db_populated():
             # Try raw symbol first
             isin = query_isin(s)
             if not isin:
                 # Try canonical form of raw symbol
-                from services.symbol_resolver import get_canonical
+                from backend.services.symbol_resolver import get_canonical
+
                 can = get_canonical(s)
                 if can and can != s:
                     isin = query_isin(can)
@@ -751,7 +784,8 @@ def _resolve_isin(raw_sym: str, company: str = "") -> tuple[str, str]:
     #   "PUNJ. NATIONLBAK"   — normalized to "PUNJAB NATIONAL BANK"
     # No stock-specific ISINs hardcoded; works purely via ScripMaster data.
     try:
-        from services.scrip_master_db import is_db_populated, query_isin_fuzzy
+        from backend.services.scrip_master_db import is_db_populated, query_isin_fuzzy
+
         if is_db_populated():
             isin = query_isin_fuzzy(s, company)
             if not isin and company:
@@ -764,8 +798,12 @@ def _resolve_isin(raw_sym: str, company: str = "") -> tuple[str, str]:
 
     # ── Step 3: ScripMaster CSV in-memory (legacy fallback) ───────────────────
     try:
-        from services.isin_resolver import resolve_isin as csv_resolve, isin_to_canonical
-        from services.symbol_resolver import get_canonical
+        from backend.services.isin_resolver import (
+            resolve_isin as csv_resolve,
+            isin_to_canonical,
+        )
+        from backend.services.symbol_resolver import get_canonical
+
         can = get_canonical(s)
         for try_sym in ([can, s] if can != s else [s]):
             isin = csv_resolve(try_sym)
@@ -782,7 +820,12 @@ def _resolve_isin(raw_sym: str, company: str = "") -> tuple[str, str]:
 
     # ── Step 4: NSE API (slow — called last to avoid rate limits) ─────────────
     try:
-        from services.symbol_resolver import get_canonical
+        from backend.services.symbol_resolver import get_canonical
+        from backend.services.nse_data_service import (
+            fetch_isin_from_nse,
+            search_nse_symbol,
+        )
+
         can = get_canonical(s)
         isin = fetch_isin_from_nse(can)
         if not isin and can != s:
@@ -794,7 +837,7 @@ def _resolve_isin(raw_sym: str, company: str = "") -> tuple[str, str]:
                 hit_sym = results[0].get("symbol", "")
                 if hit_sym:
                     isin = fetch_isin_from_nse(hit_sym)
-                    can  = hit_sym
+                    can = hit_sym
         if isin:
             return isin, can
     except Exception as e:
@@ -809,9 +852,10 @@ def _ticker_from_isin(isin: str) -> str:
     if not isin:
         return ""
     try:
-        from services.scrip_master_db import is_db_populated
-        from database import SessionLocal
+        from backend.services.scrip_master_db import is_db_populated
+        from backend.database import SessionLocal
         from sqlalchemy import text as _text
+
         if is_db_populated():
             db = SessionLocal()
             try:
@@ -821,7 +865,7 @@ def _ticker_from_isin(isin: str) -> str:
                                 AND series = 'EQ'
                                 AND symbol_root != ''
                               LIMIT 1"""),
-                    {"isin": isin}
+                    {"isin": isin},
                 ).first()
                 if row and row.symbol_root:
                     return row.symbol_root.strip().upper()
@@ -830,7 +874,8 @@ def _ticker_from_isin(isin: str) -> str:
     except Exception:
         pass
     try:
-        from services.isin_resolver import isin_to_canonical
+        from backend.services.isin_resolver import isin_to_canonical
+
         return isin_to_canonical(isin)
     except Exception:
         pass
@@ -841,6 +886,7 @@ def _ticker_from_isin(isin: str) -> str:
 # F&O info resolution
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _resolve_fno(raw_sym: str) -> tuple[bool, int]:
     """
     F&O availability + lot size.
@@ -849,12 +895,14 @@ def _resolve_fno(raw_sym: str) -> tuple[bool, int]:
     s = str(raw_sym or "").strip().upper()
 
     try:
-        from services.scrip_master_db import is_db_populated, query_fno_info
+        from backend.services.scrip_master_db import is_db_populated, query_fno_info
+
         if is_db_populated():
             fno, lot = query_fno_info(s)
             if fno and lot > 1:
                 return True, lot
-            from services.symbol_resolver import get_canonical
+            from backend.services.symbol_resolver import get_canonical
+
             can = get_canonical(s)
             if can and can != s:
                 fno, lot = query_fno_info(can)
@@ -864,11 +912,13 @@ def _resolve_fno(raw_sym: str) -> tuple[bool, int]:
         logger.error(f"[StockMaster] DB F&O lookup error: {e}", exc_info=True)
 
     try:
-        from services.engine_price_fetch import get_fno_info
+        from backend.services.engine_price_fetch import get_fno_info
+
         fno, lot = get_fno_info(s)
         if fno and lot > 1:
             return True, lot
-        from services.symbol_resolver import get_canonical
+        from backend.services.symbol_resolver import get_canonical
+
         can = get_canonical(s)
         if can and can != s:
             fno, lot = get_fno_info(can)
@@ -888,9 +938,10 @@ def _resolve_fno(raw_sym: str) -> tuple[bool, int]:
 # auto_populate
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def auto_populate(user_id: int) -> dict:
-    from services.symbol_resolver import get_canonical
-    from services.scrip_master_db import classify_instrument
+    from backend.services.symbol_resolver import get_canonical
+    from backend.services.scrip_master_db import classify_instrument
 
     db = SessionLocal()
     try:
@@ -901,7 +952,7 @@ def auto_populate(user_id: int) -> dict:
                 WHERE user_id = :uid AND segment = 'EQ'
                 GROUP BY symbol, broker
             """),
-            {"uid": user_id}
+            {"uid": user_id},
         ).fetchall()
 
         added = updated = unmatched = fno_set = skipped = 0
@@ -909,7 +960,7 @@ def auto_populate(user_id: int) -> dict:
         for r in rows:
             raw_sym = str(r.symbol or "").strip()
             company = str(r.company_name or raw_sym).strip()
-            broker  = str(r.broker or "").strip()
+            broker = str(r.broker or "").strip()
 
             if not raw_sym or raw_sym.upper() in ("NAN", "NONE", ""):
                 continue
@@ -936,27 +987,35 @@ def auto_populate(user_id: int) -> dict:
                 # Final classification check before adding to unmatched
                 instrument_class_retry = classify_instrument(raw_sym, company=company)
                 if instrument_class_retry in ("BOND", "ETF", "RIGHTS", "SGB"):
-                    logger.info(f"[AutoPopulate] Skipping {instrument_class_retry} (post-resolution): {raw_sym}")
+                    logger.info(
+                        f"[AutoPopulate] Skipping {instrument_class_retry} (post-resolution): {raw_sym}"
+                    )
                     skipped += 1
                     continue
 
                 # Add to unmatched_symbols
                 exists = db.execute(
-                    text("SELECT id FROM unmatched_symbols WHERE user_id=:uid AND broker=:br AND raw_symbol=:sym"),
-                    {"uid": user_id, "br": broker, "sym": raw_sym}
+                    text(
+                        "SELECT id FROM unmatched_symbols WHERE user_id=:uid AND broker=:br AND raw_symbol=:sym"
+                    ),
+                    {"uid": user_id, "br": broker, "sym": raw_sym},
                 ).first()
                 if not exists:
                     db.execute(
-                        text("INSERT INTO unmatched_symbols (user_id, broker, raw_symbol, company_name) VALUES (:uid,:br,:sym,:co)"),
-                        {"uid": user_id, "br": broker, "sym": raw_sym, "co": company}
+                        text(
+                            "INSERT INTO unmatched_symbols (user_id, broker, raw_symbol, company_name) VALUES (:uid,:br,:sym,:co)"
+                        ),
+                        {"uid": user_id, "br": broker, "sym": raw_sym, "co": company},
                     )
                     unmatched += 1
                 continue
 
             # Ensure stock_master_mapping has this ISIN
             existing_master = db.execute(
-                text("SELECT isin, fno_available, lot_size FROM stock_master_mapping WHERE isin=:isin"),
-                {"isin": isin}
+                text(
+                    "SELECT isin, fno_available, lot_size FROM stock_master_mapping WHERE isin=:isin"
+                ),
+                {"isin": isin},
             ).first()
 
             fno_avail, lot_sz = _resolve_fno(canonical_sym)
@@ -966,8 +1025,13 @@ def auto_populate(user_id: int) -> dict:
                     text("""INSERT INTO stock_master_mapping
                             (isin, standard_name, canonical_symbol, fno_available, lot_size)
                             VALUES (:isin, :std, :can, :fno, :lot)"""),
-                    {"isin": isin, "std": company, "can": canonical_sym,
-                     "fno": 1 if fno_avail else 0, "lot": lot_sz}
+                    {
+                        "isin": isin,
+                        "std": company,
+                        "can": canonical_sym,
+                        "fno": 1 if fno_avail else 0,
+                        "lot": lot_sz,
+                    },
                 )
                 added += 1
             else:
@@ -978,52 +1042,58 @@ def auto_populate(user_id: int) -> dict:
                             SET canonical_symbol = COALESCE(NULLIF(canonical_symbol,''), :can),
                                 updated_at = NOW()
                             WHERE isin = :isin"""),
-                    {"can": canonical_sym, "isin": isin}
+                    {"can": canonical_sym, "isin": isin},
                 )
                 if (fno_avail and lot_sz > 1) and (not old_fno or old_lot <= 1):
                     db.execute(
                         text("""UPDATE stock_master_mapping
                                 SET fno_available=:fno, lot_size=:lot, updated_at=NOW()
                                 WHERE isin=:isin"""),
-                        {"fno": 1, "lot": lot_sz, "isin": isin}
+                        {"fno": 1, "lot": lot_sz, "isin": isin},
                     )
                     fno_set += 1
 
             # Upsert per-user-broker symbol mapping
             db.execute(
-                text("""INSERT INTO user_stock_symbol_mapping (user_id, isin, broker, symbol)
+                text(
+                    """INSERT INTO user_stock_symbol_mapping (user_id, isin, broker, symbol)
                        VALUES (:uid, :isin, :br, :sym)
-                       ON DUPLICATE KEY UPDATE symbol = VALUES(symbol)"""),
-                {"uid": user_id, "isin": isin, "br": broker, "sym": raw_sym}
+                       ON DUPLICATE KEY UPDATE symbol = VALUES(symbol)"""
+                ),
+                {"uid": user_id, "isin": isin, "br": broker, "sym": raw_sym},
             )
             updated += 1
 
             # Cache normalisation
             db.execute(
-                text("INSERT IGNORE INTO symbol_normalisation (raw_symbol, canonical_symbol) VALUES (:raw, :can)"),
-                {"raw": raw_sym.upper(), "can": canonical_sym}
+                text(
+                    "INSERT IGNORE INTO symbol_normalisation (raw_symbol, canonical_symbol) VALUES (:raw, :can)"
+                ),
+                {"raw": raw_sym.upper(), "can": canonical_sym},
             )
             if company.upper() != raw_sym.upper():
                 db.execute(
-                    text("INSERT IGNORE INTO symbol_normalisation (raw_symbol, canonical_symbol) VALUES (:raw, :can)"),
-                    {"raw": company.upper(), "can": canonical_sym}
+                    text(
+                        "INSERT IGNORE INTO symbol_normalisation (raw_symbol, canonical_symbol) VALUES (:raw, :can)"
+                    ),
+                    {"raw": company.upper(), "can": canonical_sym},
                 )
 
             # Mark previously unmatched as resolved
             db.execute(
                 text("""UPDATE unmatched_symbols SET resolved=1, resolved_isin=:isin
                         WHERE user_id=:uid AND raw_symbol=:sym"""),
-                {"isin": isin, "uid": user_id, "sym": raw_sym}
+                {"isin": isin, "uid": user_id, "sym": raw_sym},
             )
 
         # ── COMMIT AND RETURN AFTER THE LOOP ──
         db.commit()
         return {
-            "added":               added,
-            "updated":             updated,
-            "unmatched":           unmatched,
-            "fno_enriched":        fno_set,
-            "skipped_non_equity":  skipped,
+            "added": added,
+            "updated": updated,
+            "unmatched": unmatched,
+            "fno_enriched": fno_set,
+            "skipped_non_equity": skipped,
         }
 
     except Exception as e:
@@ -1032,29 +1102,36 @@ def auto_populate(user_id: int) -> dict:
         raise e
     finally:
         db.close()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # update_custom_name  (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def update_custom_name(isin: str, new_name: str) -> bool:
     db = SessionLocal()
     try:
         if new_name.strip():
             db.execute(
-                text("UPDATE stock_master_mapping SET user_custom_name=:name, updated_at=NOW() WHERE isin=:isin"),
-                {"name": new_name.strip(), "isin": isin}
+                text(
+                    "UPDATE stock_master_mapping SET user_custom_name=:name, updated_at=NOW() WHERE isin=:isin"
+                ),
+                {"name": new_name.strip(), "isin": isin},
             )
         else:
             db.execute(
-                text("UPDATE stock_master_mapping SET user_custom_name=NULL, updated_at=NOW() WHERE isin=:isin"),
-                {"isin": isin}
+                text(
+                    "UPDATE stock_master_mapping SET user_custom_name=NULL, updated_at=NOW() WHERE isin=:isin"
+                ),
+                {"isin": isin},
             )
         db.commit()
         return True
     except Exception:
         db.rollback()
         return False
-     
+
     finally:
         db.close()
 
@@ -1062,6 +1139,7 @@ def update_custom_name(isin: str, new_name: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # get_user_stock_grid  (unchanged logic)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def get_user_stock_grid(user_id: int) -> list[dict]:
     db = SessionLocal()
@@ -1089,31 +1167,33 @@ def get_user_stock_grid(user_id: int) -> list[dict]:
                   AND h.segment  = 'EQ'
                 ORDER BY h.symbol
             """),
-            {"uid": user_id}
+            {"uid": user_id},
         ).fetchall()
 
         if not rows:
             return []
 
-        grouped: dict = defaultdict(lambda: {
-            "brokers": {},
-            "total_qty": 0.0,
-            "company_name": "",
-            "isin": "",
-            "is_unresolved": False,
-        })
+        grouped: dict = defaultdict(
+            lambda: {
+                "brokers": {},
+                "total_qty": 0.0,
+                "company_name": "",
+                "isin": "",
+                "is_unresolved": False,
+            }
+        )
 
         for r in rows:
-            key  = r.display_isin
+            key = r.display_isin
             info = grouped[key]
             info["company_name"] = r.company_name or r.raw_symbol
-            info["isin"]         = r.isin if r.isin else ""
+            info["isin"] = r.isin if r.isin else ""
             if not r.isin:
                 info["is_unresolved"] = True
 
             broker = r.mapped_broker or "Unknown"
             symbol = r.mapped_symbol or r.raw_symbol
-            qty    = float(r.quantity) if r.quantity else 0.0
+            qty = float(r.quantity) if r.quantity else 0.0
 
             if broker not in info["brokers"]:
                 info["brokers"][broker] = {"symbol": symbol, "qty": 0.0}
@@ -1125,38 +1205,44 @@ def get_user_stock_grid(user_id: int) -> list[dict]:
         if isins_to_fetch:
             master_rows = db.execute(
                 text("SELECT * FROM stock_master_mapping WHERE isin IN :isins"),
-                {"isins": tuple(isins_to_fetch)}
+                {"isins": tuple(isins_to_fetch)},
             ).fetchall()
             for mr in master_rows:
                 master_lookup[mr.isin] = mr
 
         grid = []
         for key, info in grouped.items():
-            isin   = info["isin"]
+            isin = info["isin"]
             master = master_lookup.get(isin) if isin else None
 
-            standard_name = master.standard_name    if master else (info["company_name"] or key)
-            custom_name   = getattr(master, "user_custom_name", "") or ""
-            canonical     = master.canonical_symbol  if master else ""
+            standard_name = (
+                master.standard_name if master else (info["company_name"] or key)
+            )
+            custom_name = getattr(master, "user_custom_name", "") or ""
+            canonical = master.canonical_symbol if master else ""
             fno_available = bool(master.fno_available) if master else False
-            lot_size      = int(master.lot_size or 0)  if master else 0
-            total_qty     = info["total_qty"]
+            lot_size = int(master.lot_size or 0) if master else 0
+            total_qty = info["total_qty"]
 
             row = {
-                "isin":             isin if isin else "",
-                "standard_name":    standard_name,
+                "isin": isin if isin else "",
+                "standard_name": standard_name,
                 "user_custom_name": custom_name,
                 "canonical_symbol": canonical,
-                "fno_available":    fno_available,
-                "lot_size":         lot_size,
-                "total_qty":        round(total_qty, 2),
-                "resolved":         "No" if info["is_unresolved"] else "Yes",
-                "updated_at":       str(master.updated_at) if master and hasattr(master, "updated_at") else "",
+                "fno_available": fno_available,
+                "lot_size": lot_size,
+                "total_qty": round(total_qty, 2),
+                "resolved": "No" if info["is_unresolved"] else "Yes",
+                "updated_at": (
+                    str(master.updated_at)
+                    if master and hasattr(master, "updated_at")
+                    else ""
+                ),
             }
 
             for broker, bdata in info["brokers"].items():
                 row[f"{username}_{broker}_symbol"] = bdata["symbol"]
-                row[f"{username}_{broker}_qty"]    = round(bdata["qty"], 2)
+                row[f"{username}_{broker}_qty"] = round(bdata["qty"], 2)
 
             if fno_available and lot_size > 0 and total_qty > 0:
                 row["pending_qty"] = (lot_size - total_qty % lot_size) % lot_size
@@ -1168,7 +1254,7 @@ def get_user_stock_grid(user_id: int) -> list[dict]:
         return grid
     finally:
         db.close()
-        
+
 
 def download_and_upsert_scrip_master() -> dict:
     """

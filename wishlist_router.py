@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
-from database import SessionLocal
-from services.wishlist_service import (
+from backend.database import SessionLocal
+from backend.services.wishlist_service import (
     get_wishlist,
     add_to_wishlist,
     remove_from_wishlist,
@@ -17,7 +17,7 @@ from services.wishlist_service import (
     clear_group_auto_added,
     clear_group_all,
 )
-from services.task_status import start_task, finish_task
+from backend.services.task_status import start_task, finish_task
 import asyncio
 
 router = APIRouter(tags=["Wishlist"])
@@ -34,8 +34,8 @@ def get_db():
 class WishlistAdd(BaseModel):
     symbol: str
     canonical_symbol: Optional[str] = ""
-    is_auto_added:    Optional[bool] = False
-    notes:            Optional[str]  = ""
+    is_auto_added: Optional[bool] = False
+    notes: Optional[str] = ""
 
 
 @router.get("/wishlist/{user_id}")

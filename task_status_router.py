@@ -6,9 +6,10 @@ Frontend polls GET /task-status/{user_id} to know if a background job
 so it can show a "⏳ Processing…" badge instead of letting the user
 fire a second overlapping request.
 """
+
 from fastapi import APIRouter
 from typing import Optional
-from services.task_status import get_status
+from backend.services.task_status import get_status
 
 router = APIRouter(tags=["Task Status"])
 

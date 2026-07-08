@@ -111,7 +111,7 @@ def _fetch_daily(scrip_code: int, days: int) -> pd.DataFrame | None:
         if not symbol:
             # Fallback: try to fetch from DB
             from sqlalchemy import text
-            from database import SessionLocal
+            from backend.database import SessionLocal
             db = SessionLocal()
             try:
                 row = db.execute(
@@ -498,7 +498,7 @@ def get_holding_intel(user_id: int, symbol: str, current_price: float) -> dict:
         "confidence_add": 0,
     }
     try:
-        from database import SessionLocal
+        from backend.database import SessionLocal
         from sqlalchemy import text
         db = SessionLocal()
         try:

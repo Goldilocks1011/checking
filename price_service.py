@@ -14,9 +14,10 @@ import threading
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from database import SessionLocal
+from backend.database import SessionLocal
 from sqlalchemy import text
 import logging
+
 logger = logging.getLogger(__name__)
 # Thread-safe lock for the period cache
 _period_cache_lock = threading.Lock()
@@ -25,10 +26,11 @@ _client = None
 # In-memory cache for period prices: key = scrip_code, value = dict
 _period_cache = {}
 
-__all__ = ['_get_client', '_find_scrip_code_from_db', '_get_scrip_data_for_code']
+__all__ = ["_get_client", "_find_scrip_code_from_db", "_get_scrip_data_for_code"]
 # ─────────────────────────────────────────────────────────────────────────────
 # DB-based ScripCode lookup
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _find_scrip_code_from_db(symbol: str) -> tuple[str | None, str | None]:
     sym = str(symbol).strip().upper()
@@ -45,13 +47,15 @@ def _find_scrip_code_from_db(symbol: str) -> tuple[str | None, str | None]:
                 ORDER BY CASE WHEN UPPER(symbol_root) = :sym THEN 0 ELSE 1 END
                 LIMIT 1
             """),
-            {"sym": sym}
+            {"sym": sym},
         ).first()
         if row and row.scrip_code:
             return str(row.scrip_code).strip(), str(row.scrip_data or "").strip()
         return None, None
     except Exception as e:
-        logger.error(f"[PriceService] DB ScripCode lookup error for {symbol}: {e}", exc_info=True)
+        logger.error(
+            f"[PriceService] DB ScripCode lookup error for {symbol}: {e}", exc_info=True
+        )
         return None, None
     finally:
         db.close()
@@ -67,9 +71,11 @@ def _get_scrip_data_for_code(scrip_code: str) -> str:
                 WHERE scrip_code = :code AND scrip_data IS NOT NULL AND scrip_data != ''
                 LIMIT 1
             """),
-            {"code": str(scrip_code).strip()}
+            {"code": str(scrip_code).strip()},
         ).first()
-        return str(row.scrip_data).strip() if row and row.scrip_data else str(scrip_code)
+        return (
+            str(row.scrip_data).strip() if row and row.scrip_data else str(scrip_code)
+        )
     except Exception:
         return str(scrip_code)
     finally:
@@ -79,6 +85,7 @@ def _get_scrip_data_for_code(scrip_code: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Canonical resolution
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _resolve_canonical(symbol: str) -> str:
     sym = str(symbol).strip().upper()
@@ -96,7 +103,7 @@ def _resolve_canonical(symbol: str) -> str:
                   AND sm.canonical_symbol IS NOT NULL AND sm.canonical_symbol != ''
                 LIMIT 1
             """),
-            {"sym": sym}
+            {"sym": sym},
         ).fetchone()
         if row and row.canonical_symbol:
             return row.canonical_symbol.strip().upper()
@@ -107,17 +114,21 @@ def _resolve_canonical(symbol: str) -> str:
                 WHERE UPPER(canonical_symbol) = :sym
                 LIMIT 1
             """),
-            {"sym": sym}
+            {"sym": sym},
         ).fetchone()
         if row2 and row2.canonical_symbol:
             return row2.canonical_symbol.strip().upper()
     except Exception as e:
-        logger.error(f"[PriceService] _resolve_canonical DB error for {symbol}: {e}", exc_info=True)
+        logger.error(
+            f"[PriceService] _resolve_canonical DB error for {symbol}: {e}",
+            exc_info=True,
+        )
     finally:
         db.close()
 
     try:
-        from services.isin_resolver import resolve_isin, isin_to_canonical
+        from backend.services.isin_resolver import resolve_isin, isin_to_canonical
+
         isin = resolve_isin(sym)
         if isin:
             can = isin_to_canonical(isin)
@@ -132,6 +143,7 @@ def _resolve_canonical(symbol: str) -> str:
 # 5paisa client (lazy init)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _get_client(force_refresh=False):
     global _client
     if force_refresh:
@@ -139,6 +151,7 @@ def _get_client(force_refresh=False):
     if _client is not None:
         return _client
     from auth_manager import get_client
+
     _client = get_client()
     logger.info("[PriceService] 5paisa client created")
     return _client
@@ -148,8 +161,10 @@ def _get_client(force_refresh=False):
 # PERIOD HIGH/LOW FETCHING
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_period_high_low(scrip_code: str, days: int,
-                          exchange: str = 'N') -> tuple[float, float]:
+
+def fetch_period_high_low(
+    scrip_code: str, days: int, exchange: str = "N"
+) -> tuple[float, float]:
     """
     Fetch (High, Low) for given scrip_code over last `days` calendar days.
     Uses 5paisa historical_data with 1d interval.
@@ -158,36 +173,48 @@ def fetch_period_high_low(scrip_code: str, days: int,
     if client is None:
         return 0.0, 0.0
 
-    end_date = datetime.now().strftime('%Y-%m-%d')
+    end_date = datetime.now().strftime("%Y-%m-%d")
 
     def _try_fetch(exch: str, day_window: int) -> tuple[float, float]:
-        start_date = (datetime.now() - timedelta(days=day_window + 10)).strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=day_window + 10)).strftime(
+            "%Y-%m-%d"
+        )
         for attempt in range(3):
             try:
-                df = client.historical_data(exch, 'C', int(scrip_code), '1d', start_date, end_date)
-                if df is None or (hasattr(df, 'empty') and df.empty):
+                df = client.historical_data(
+                    exch, "C", int(scrip_code), "1d", start_date, end_date
+                )
+                if df is None or (hasattr(df, "empty") and df.empty):
                     if attempt < 2:
                         time.sleep(1.0)
                         continue
                     return 0.0, 0.0
-                if not hasattr(df, 'columns') or 'High' not in df.columns or 'Low' not in df.columns:
+                if (
+                    not hasattr(df, "columns")
+                    or "High" not in df.columns
+                    or "Low" not in df.columns
+                ):
                     return 0.0, 0.0
-                if 'Datetime' in df.columns:
-                    df['Datetime'] = pd.to_datetime(df['Datetime'], errors='coerce')
-                    df = df.sort_values('Datetime')
+                if "Datetime" in df.columns:
+                    df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
+                    df = df.sort_values("Datetime")
                     cutoff = datetime.now() - timedelta(days=day_window)
-                    df = df[df['Datetime'] >= cutoff]
+                    df = df[df["Datetime"] >= cutoff]
                 if df.empty:
                     return 0.0, 0.0
                 import math
-                high = float(df['High'].max())
-                low  = float(df['Low'].min())
+
+                high = float(df["High"].max())
+                low = float(df["Low"].min())
                 if math.isnan(high) or math.isnan(low) or high <= 0:
                     return 0.0, 0.0
                 return high, low
             except Exception as e:
-                logger.error(f"[PriceService] Period fetch attempt {attempt+1} error for "
-                      f"scrip {scrip_code}, {day_window}d, exch={exch}: {e}", exc_info=True)
+                logger.error(
+                    f"[PriceService] Period fetch attempt {attempt+1} error for "
+                    f"scrip {scrip_code}, {day_window}d, exch={exch}: {e}",
+                    exc_info=True,
+                )
                 if attempt < 2:
                     time.sleep(1.0)
         return 0.0, 0.0
@@ -195,15 +222,15 @@ def fetch_period_high_low(scrip_code: str, days: int,
     high, low = _try_fetch(exchange, days)
     if high > 0:
         return high, low
-    if exchange == 'N':
-        high, low = _try_fetch('B', days)
+    if exchange == "N":
+        high, low = _try_fetch("B", days)
         if high > 0:
             return high, low
     if days >= 365:
-        high, low = _try_fetch('N', 300)
+        high, low = _try_fetch("N", 300)
         if high > 0:
             return high, low
-        high, low = _try_fetch('B', 300)
+        high, low = _try_fetch("B", 300)
         if high > 0:
             return high, low
     return 0.0, 0.0
@@ -218,12 +245,14 @@ def get_period_prices(scrip_code: str, symbol_name: str = "") -> dict:
         if scrip_code in _period_cache:
             return _period_cache[scrip_code]
 
-    logger.info(f"[PriceService] Fetching period prices for scrip {scrip_code} ({symbol_name})…")
+    logger.info(
+        f"[PriceService] Fetching period prices for scrip {scrip_code} ({symbol_name})…"
+    )
 
     period_specs = [
-        ("1m",  30),
-        ("3m",  90),
-        ("6m",  180),
+        ("1m", 30),
+        ("3m", 90),
+        ("6m", 180),
         ("52w", 365),
     ]
 
@@ -235,30 +264,38 @@ def get_period_prices(scrip_code: str, symbol_name: str = "") -> dict:
 
     try:
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="ohlc") as executor:
-            futures = {executor.submit(_fetch_period, lbl, d): lbl for lbl, d in period_specs}
+            futures = {
+                executor.submit(_fetch_period, lbl, d): lbl for lbl, d in period_specs
+            }
             for future in as_completed(futures, timeout=30):
                 try:
                     lbl, h, l = future.result()
                     period_results[lbl] = (h, l)
                 except Exception as e:
                     lbl = futures[future]
-                    logger.error(f"[PriceService] Period fetch error {lbl} scrip={scrip_code}: {e}", exc_info=True)
+                    logger.error(
+                        f"[PriceService] Period fetch error {lbl} scrip={scrip_code}: {e}",
+                        exc_info=True,
+                    )
                     period_results[lbl] = (0.0, 0.0)
     except Exception as e:
-        logger.error(f"[PriceService] Parallel period fetch failed ({e}), falling back to sequential", exc_info=True)
+        logger.error(
+            f"[PriceService] Parallel period fetch failed ({e}), falling back to sequential",
+            exc_info=True,
+        )
         for lbl, days in period_specs:
             if lbl not in period_results:
                 period_results[lbl] = fetch_period_high_low(scrip_code, days)
 
     result = {
-        '1m_high':  period_results.get("1m",  (0.0, 0.0))[0],
-        '1m_low':   period_results.get("1m",  (0.0, 0.0))[1],
-        '3m_high':  period_results.get("3m",  (0.0, 0.0))[0],
-        '3m_low':   period_results.get("3m",  (0.0, 0.0))[1],
-        '6m_high':  period_results.get("6m",  (0.0, 0.0))[0],
-        '6m_low':   period_results.get("6m",  (0.0, 0.0))[1],
-        '52w_high': period_results.get("52w", (0.0, 0.0))[0],
-        '52w_low':  period_results.get("52w", (0.0, 0.0))[1],
+        "1m_high": period_results.get("1m", (0.0, 0.0))[0],
+        "1m_low": period_results.get("1m", (0.0, 0.0))[1],
+        "3m_high": period_results.get("3m", (0.0, 0.0))[0],
+        "3m_low": period_results.get("3m", (0.0, 0.0))[1],
+        "6m_high": period_results.get("6m", (0.0, 0.0))[0],
+        "6m_low": period_results.get("6m", (0.0, 0.0))[1],
+        "52w_high": period_results.get("52w", (0.0, 0.0))[0],
+        "52w_low": period_results.get("52w", (0.0, 0.0))[1],
     }
 
     with _period_cache_lock:
@@ -271,12 +308,13 @@ def get_period_prices(scrip_code: str, symbol_name: str = "") -> dict:
 # Live market feed
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _batch_market_feed(req_list: list, original_symbols: set) -> dict[str, float]:
     client = _get_client()
     results = {}
     BATCH = 50
     for i in range(0, len(req_list), BATCH):
-        batch = req_list[i: i + BATCH]
+        batch = req_list[i : i + BATCH]
         try:
             resp = client.fetch_market_feed_scrip(batch)
             items = []
@@ -284,7 +322,9 @@ def _batch_market_feed(req_list: list, original_symbols: set) -> dict[str, float
                 items = resp
             elif isinstance(resp, dict):
                 items = resp.get("Data", resp.get("data", []))
-            logger.info(f"[PriceService] batch {i // BATCH}: {len(items)} items received")
+            logger.info(
+                f"[PriceService] batch {i // BATCH}: {len(items)} items received"
+            )
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -307,6 +347,7 @@ def _batch_market_feed(req_list: list, original_symbols: set) -> dict[str, float
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN PUBLIC FUNCTION — fetch live spot prices
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def fetch_current_prices(symbols: list[str]) -> dict[str, float]:
     """DB-only scrip lookup; no CSV."""
@@ -332,7 +373,9 @@ def fetch_current_prices(symbols: list[str]) -> dict[str, float]:
             original_symbols_set.add(sym)
             req_list.append({"Exch": "N", "ExchType": "C", "ScripData": sd})
         else:
-            logger.warning(f"[PriceService] ScripCode not found for '{sym}' (canonical: '{canonical}')")
+            logger.warning(
+                f"[PriceService] ScripCode not found for '{sym}' (canonical: '{canonical}')"
+            )
 
     if not req_list:
         return {}

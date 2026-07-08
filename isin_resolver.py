@@ -9,9 +9,12 @@ KEY CHANGES vs v3:
   ⑤ build_canonical_bridge() no longer merges CSV data.
   scrip_master_cache table is the single source of truth.
 """
+
 from __future__ import annotations
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 def resolve_isin(symbol: str) -> str:
     """
@@ -29,7 +32,8 @@ def resolve_isin(symbol: str) -> str:
     if not s or s in ("NAN", "NONE", ""):
         return ""
     try:
-        from services.scrip_master_db import is_db_populated, query_isin
+        from backend.services.scrip_master_db import is_db_populated, query_isin
+
         if is_db_populated():
             isin = query_isin(s)
             if isin:
@@ -56,9 +60,10 @@ def isin_to_canonical(isin: str) -> str:
         return ""
     s = str(isin).strip().upper()
     try:
-        from services.scrip_master_db import is_db_populated
-        from database import SessionLocal
+        from backend.services.scrip_master_db import is_db_populated
+        from backend.database import SessionLocal
         from sqlalchemy import text
+
         if is_db_populated():
             db = SessionLocal()
             try:
@@ -68,7 +73,8 @@ def isin_to_canonical(isin: str) -> str:
                         WHERE isin = :isin AND exch='N' AND exch_type='C'
                           AND symbol_root IS NOT NULL AND symbol_root != ''
                         LIMIT 1
-                    """), {"isin": s}
+                    """),
+                    {"isin": s},
                 ).first()
                 if row and row.symbol_root:
                     return row.symbol_root.strip().upper()
@@ -93,7 +99,7 @@ def build_canonical_bridge(all_txns_df) -> dict[str, str]:
     if "isin" in all_txns_df.columns and "symbol" in all_txns_df.columns:
         for _, row in all_txns_df.iterrows():
             isin = str(row.get("isin", "")).strip().upper()
-            sym  = str(row.get("symbol", "")).strip().upper()
+            sym = str(row.get("symbol", "")).strip().upper()
             if isin and isin not in ("NAN", "NONE", "") and isin not in bridge:
                 # Try to get the canonical from DB; fall back to transaction symbol
                 can = isin_to_canonical(isin) or sym
@@ -104,10 +110,13 @@ def build_canonical_bridge(all_txns_df) -> dict[str, str]:
 def enrich_transactions_with_isin(db, user_id: int):
     """Post-insert: fill empty ISINs in transactions from scrip_master_cache."""
     from sqlalchemy import text
+
     rows = db.execute(
-        text("SELECT id, symbol FROM transactions "
-             "WHERE user_id=:uid AND (isin IS NULL OR isin='')"),
-        {"uid": user_id}
+        text(
+            "SELECT id, symbol FROM transactions "
+            "WHERE user_id=:uid AND (isin IS NULL OR isin='')"
+        ),
+        {"uid": user_id},
     ).fetchall()
     updated = 0
     for row in rows:
@@ -115,7 +124,7 @@ def enrich_transactions_with_isin(db, user_id: int):
         if isin:
             db.execute(
                 text("UPDATE transactions SET isin=:isin WHERE id=:id"),
-                {"isin": isin, "id": row.id}
+                {"isin": isin, "id": row.id},
             )
             updated += 1
     if updated:

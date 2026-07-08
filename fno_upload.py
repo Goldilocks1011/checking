@@ -1,15 +1,17 @@
 from fastapi import APIRouter, File, UploadFile, Form, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import SessionLocal
-from services.fno_engine import process_fno_file
-from services.task_status import start_task, finish_task
+from backend.database import SessionLocal
+from backend.services.fno_engine import process_fno_file
+from backend.services.task_status import start_task, finish_task
 from io import BytesIO
 import asyncio
 import logging
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["F&O Upload"])
+
 
 def get_db():
     db = SessionLocal()
@@ -18,28 +20,38 @@ def get_db():
     finally:
         db.close()
 
+
 @router.post("/upload/fno")
 async def upload_fno(
     file: UploadFile = File(...),
     user_id: int = Form(...),
     broker: str = Form(...),
     file_type: str = Form("FNO"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    if not start_task(user_id, "upload_fno", f"Processing F&O file '{file.filename}'..."):
-        return {"status": "busy", "message": "An F&O upload is already processing for this user. Please wait."}
+    if not start_task(
+        user_id, "upload_fno", f"Processing F&O file '{file.filename}'..."
+    ):
+        return {
+            "status": "busy",
+            "message": "An F&O upload is already processing for this user. Please wait.",
+        }
 
     try:
         file_bytes = await file.read()
         buf = BytesIO(file_bytes)
         buf.name = file.filename
 
-        result = await asyncio.to_thread(process_fno_file, buf, user_id, broker, file.filename)
+        result = await asyncio.to_thread(
+            process_fno_file, buf, user_id, broker, file.filename
+        )
 
         try:
             db.execute(
-                text("UPDATE processed_files SET file_content = :content WHERE user_id = :uid AND filename = :fn"),
-                {"content": file_bytes, "uid": user_id, "fn": file.filename}
+                text(
+                    "UPDATE processed_files SET file_content = :content WHERE user_id = :uid AND filename = :fn"
+                ),
+                {"content": file_bytes, "uid": user_id, "fn": file.filename},
             )
             db.commit()
         except Exception as e:

@@ -12,7 +12,7 @@ Adds:
 """
 
 from sqlalchemy import text
-from database import SessionLocal
+from backend.database import SessionLocal
 from collections import defaultdict
 from datetime import datetime, date
 import calendar

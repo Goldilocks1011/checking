@@ -14,6 +14,7 @@ External services (configure via env vars or hardcode for now):
   ANALYSER_URL  = http://139.59.74.2:8080
   NEWS_URL      = http://159.89.225.5:8010
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,7 @@ from fastapi import APIRouter
 from typing import Optional
 
 # ── local services ────────────────────────────────────────────────────────────
-from services.analysis_service import (
+from backend.services.analysis_service import (
     get_price_levels,
     get_mmm_stats,
     get_seasonal_pattern,
@@ -31,25 +32,27 @@ from services.analysis_service import (
     get_momentum_score,
     get_holding_intel,
 )
-from services.suggestion_engine import get_suggestion
-from services.scrip_master_db import is_db_populated
-from database import SessionLocal
+from backend.services.suggestion_engine import get_suggestion
+from backend.services.scrip_master_db import is_db_populated
+from backend.database import SessionLocal
 from sqlalchemy import text
 import logging
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Impact"])
 
 # ── external service URLs (override via env) ──────────────────────────────────
 ANALYSER_URL = os.getenv("ANALYSER_URL", "http://139.59.74.2:8080")
-NEWS_URL     = os.getenv("NEWS_URL",     "http://159.89.225.5:8010")
+NEWS_URL = os.getenv("NEWS_URL", "http://159.89.225.5:8010")
 
-_EXT_TIMEOUT = 5.0   # seconds — never block UI longer than this
+_EXT_TIMEOUT = 5.0  # seconds — never block UI longer than this
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _scrip_code_for(symbol: str) -> int | None:
     """Look up scrip_code from scrip_master_cache for the given NSE symbol."""
@@ -65,7 +68,7 @@ def _scrip_code_for(symbol: str) -> int | None:
                 ORDER BY CASE WHEN UPPER(symbol_root) = :sym THEN 0 ELSE 1 END
                 LIMIT 1
             """),
-            {"sym": s}
+            {"sym": s},
         ).first()
         return int(row.scrip_code) if row and row.scrip_code else None
     except Exception:
@@ -91,7 +94,7 @@ def _get_corp_events(symbol: str, user_id: int | None) -> list[dict]:
                 ORDER BY ex_date ASC
                 LIMIT 10
             """),
-            {"uid": user_id, "sym": symbol.strip().upper()}
+            {"uid": user_id, "sym": symbol.strip().upper()},
         ).fetchall()
         return [dict(r._mapping) for r in rows]
     except Exception:
@@ -120,7 +123,7 @@ async def _fetch_news(symbol: str) -> dict:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 f"{NEWS_URL}/api/news/fetch",
-                params={"q": symbol, "time": "72h"}   # 72h catches more articles
+                params={"q": symbol, "time": "72h"},  # 72h catches more articles
             )
             if resp.status_code == 200:
                 return resp.json()
@@ -133,6 +136,7 @@ async def _fetch_news(symbol: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # /impact/{symbol}
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @router.get("/impact/{symbol}")
 async def get_impact(symbol: str, user_id: Optional[int] = None):
@@ -171,7 +175,7 @@ async def get_impact(symbol: str, user_id: Optional[int] = None):
         return get_consecutive_trend(scrip_code) if scrip_code else {}
 
     def _local_momentum():
-        return get_momentum_score(sym)   # uses yfinance — doesn't need scrip_code
+        return get_momentum_score(sym)  # uses yfinance — doesn't need scrip_code
 
     # Run local calls in thread-pool (they're blocking/sync)
     (
@@ -214,18 +218,32 @@ async def get_impact(symbol: str, user_id: Optional[int] = None):
         technical = analysis.get("technical", {})
         historical = analysis.get("historical", {})
         trading_plan = analysis.get("trading_plan", {})
-        
+
         # ── Extract and sanitise trading plan from API zones ──────────────
         buy_zones = analysis.get("buy_zones", []) or trading_plan.get("buy_zones", [])
-        sell_zones = analysis.get("sell_zones", []) or trading_plan.get("sell_zones", [])
-        stop_loss_zone = trading_plan.get("stop_loss_zone", []) or analysis.get("stop_loss_zone", [])
+        sell_zones = analysis.get("sell_zones", []) or trading_plan.get(
+            "sell_zones", []
+        )
+        stop_loss_zone = trading_plan.get("stop_loss_zone", []) or analysis.get(
+            "stop_loss_zone", []
+        )
 
-        buy_target_1 = float(buy_zones[0][0]) if buy_zones and isinstance(buy_zones[0], list) and len(buy_zones[0]) > 0 else 0.0
-        sell_target_1 = float(sell_zones[0][1]) if sell_zones and isinstance(sell_zones[0], list) and len(sell_zones[0]) > 1 else 0.0
+        buy_target_1 = (
+            float(buy_zones[0][0])
+            if buy_zones and isinstance(buy_zones[0], list) and len(buy_zones[0]) > 0
+            else 0.0
+        )
+        sell_target_1 = (
+            float(sell_zones[0][1])
+            if sell_zones and isinstance(sell_zones[0], list) and len(sell_zones[0]) > 1
+            else 0.0
+        )
         buy_stop_loss = float(stop_loss_zone[0]) if stop_loss_zone else 0.0
 
         ltp = float(price_levels.get("ltp", 0) or 0)
-        if sell_target_1 > 0 and (sell_target_1 <= buy_target_1 or (ltp > 0 and sell_target_1 <= ltp)):
+        if sell_target_1 > 0 and (
+            sell_target_1 <= buy_target_1 or (ltp > 0 and sell_target_1 <= ltp)
+        ):
             sell_target_1 = 0.0
 
         # ── Calculate nested scores for Technical, Fundamental, Historical ──
@@ -234,7 +252,9 @@ async def get_impact(symbol: str, user_id: Optional[int] = None):
             technical_score = analysis["technical"].get("score", technical_score)
 
         fundamental_score = analysis.get("fundamental_score", "—")
-        if analysis.get("fundamental") and isinstance(analysis.get("fundamental"), dict):
+        if analysis.get("fundamental") and isinstance(
+            analysis.get("fundamental"), dict
+        ):
             fundamental_score = analysis["fundamental"].get("score", fundamental_score)
 
         historical_score = analysis.get("historical_score", "—")
@@ -245,36 +265,36 @@ async def get_impact(symbol: str, user_id: Optional[int] = None):
         analyst = {
             "stock_info": analyst_raw.get("stock_info", {}),
             "analysis": {
-                "signal":           analysis.get("signal", momentum.get("signal", "HOLD")),
-                "signal_strength":  analysis.get("signal_strength", ""),
-                "overall_score":    analysis.get("overall_score", 0),
-                "technical_score":  technical_score,
+                "signal": analysis.get("signal", momentum.get("signal", "HOLD")),
+                "signal_strength": analysis.get("signal_strength", ""),
+                "overall_score": analysis.get("overall_score", 0),
+                "technical_score": technical_score,
                 "fundamental_score": fundamental_score,
                 "historical_score": historical_score,
                 "technical": {
-                    "rsi":          technical.get("rsi", momentum.get("rsi", 50)),
-                    "macd_hist":    technical.get("macd_hist", 0.0),
-                    "adx":          technical.get("adx", 0.0),
+                    "rsi": technical.get("rsi", momentum.get("rsi", 50)),
+                    "macd_hist": technical.get("macd_hist", 0.0),
+                    "adx": technical.get("adx", 0.0),
                     "volume_ratio": technical.get("volume_ratio", 1.0),
-                    "bb_upper":     technical.get("bb_upper", 0.0),
-                    "bb_middle":    technical.get("bb_middle", 0.0),
-                    "bb_lower":     technical.get("bb_lower", 0.0),
+                    "bb_upper": technical.get("bb_upper", 0.0),
+                    "bb_middle": technical.get("bb_middle", 0.0),
+                    "bb_lower": technical.get("bb_lower", 0.0),
                 },
                 "historical": {
-                    "trend":            historical.get("trend", "FLAT"),
+                    "trend": historical.get("trend", "FLAT"),
                     "pct_from_52w_high": historical.get("pct_from_52w_high", 0.0),
-                    "volatility":       historical.get("volatility", 0.0),
-                    "supports":         historical.get("supports", []),
-                    "resistances":      historical.get("resistances", []),
+                    "volatility": historical.get("volatility", 0.0),
+                    "supports": historical.get("supports", []),
+                    "resistances": historical.get("resistances", []),
                 },
                 "trading_plan": {
-                    "buy_target_1":  buy_target_1,
+                    "buy_target_1": buy_target_1,
                     "buy_stop_loss": buy_stop_loss,
                     "sell_target_1": sell_target_1,
-                    "buy_target_2":  trading_plan.get("buy_target_2", 0.0),
+                    "buy_target_2": trading_plan.get("buy_target_2", 0.0),
                     "sell_target_2": trading_plan.get("sell_target_2", 0.0),
-                    "sell_stop_loss":trading_plan.get("sell_stop_loss", 0.0),
-                    "buy_triggers":  trading_plan.get("buy_triggers", []),
+                    "sell_stop_loss": trading_plan.get("sell_stop_loss", 0.0),
+                    "buy_triggers": trading_plan.get("buy_triggers", []),
                     "sell_triggers": trading_plan.get("sell_triggers", []),
                 },
             },
@@ -284,20 +304,20 @@ async def get_impact(symbol: str, user_id: Optional[int] = None):
         analyst = {
             "stock_info": {},
             "analysis": {
-                "signal":           momentum.get("signal", "HOLD"),
-                "signal_strength":  "",
-                "overall_score":    0,
-                "technical_score":  "—",
-                "fundamental_score":"—",
+                "signal": momentum.get("signal", "HOLD"),
+                "signal_strength": "",
+                "overall_score": 0,
+                "technical_score": "—",
+                "fundamental_score": "—",
                 "historical_score": "—",
                 "technical": {
-                    "rsi":          momentum.get("rsi", 50),
-                    "macd_hist":    0,
-                    "adx":          0,
+                    "rsi": momentum.get("rsi", 50),
+                    "macd_hist": 0,
+                    "adx": 0,
                     "volume_ratio": 1,
-                    "bb_upper":     0,
-                    "bb_middle":    0,
-                    "bb_lower":     0,
+                    "bb_upper": 0,
+                    "bb_middle": 0,
+                    "bb_lower": 0,
                 },
                 "historical": {},
                 "trading_plan": {},
@@ -312,18 +332,18 @@ async def get_impact(symbol: str, user_id: Optional[int] = None):
             news = {"articles": news_raw}
         elif isinstance(news_raw, dict):
             news = news_raw
-    
+
     return {
-        "symbol":          sym,
-        "scrip_code":      scrip_code,
-        "price_levels":    price_levels,
-        "mmm":             mmm,
-        "trend":           trend,
-        "momentum":        momentum,
-        "analyst":         analyst,
-        "seasonal":        seasonal,
-        "corp_events":     corp_events,
-        "news":            news,
+        "symbol": sym,
+        "scrip_code": scrip_code,
+        "price_levels": price_levels,
+        "mmm": mmm,
+        "trend": trend,
+        "momentum": momentum,
+        "analyst": analyst,
+        "seasonal": seasonal,
+        "corp_events": corp_events,
+        "news": news,
         "account_context": account_context,
     }
 
@@ -333,9 +353,10 @@ async def get_impact(symbol: str, user_id: Optional[int] = None):
 # /impact/batch         — full analysis for multiple symbols in parallel
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @router.get("/impact/quick-batch")
 async def get_impact_quick_batch(
-    symbols: str,          # comma-separated: "RELIANCE,TCS,INFY"
+    symbols: str,  # comma-separated: "RELIANCE,TCS,INFY"
     user_id: Optional[int] = None,
 ):
     """
@@ -382,9 +403,9 @@ async def get_impact_quick_batch(
 
 @router.get("/impact/batch")
 async def get_impact_batch(
-    symbols: str,          # comma-separated
+    symbols: str,  # comma-separated
     user_id: Optional[int] = None,
-    quick: bool = False,   # if True, skip analyst + news (faster)
+    quick: bool = False,  # if True, skip analyst + news (faster)
 ):
     """
     Full impact bundle for multiple symbols in parallel.
@@ -404,11 +425,20 @@ async def get_impact_batch(
         try:
             scrip_code = _scrip_code_for(sym)
 
-            def _price():   return get_price_levels(scrip_code) if scrip_code else {}
-            def _mmm():     return get_mmm_stats(scrip_code) if scrip_code else {}
-            def _seasonal():return get_seasonal_pattern(scrip_code) if scrip_code else {}
-            def _trend():   return get_consecutive_trend(scrip_code) if scrip_code else {}
-            def _momentum():return get_momentum_score(sym)
+            def _price():
+                return get_price_levels(scrip_code) if scrip_code else {}
+
+            def _mmm():
+                return get_mmm_stats(scrip_code) if scrip_code else {}
+
+            def _seasonal():
+                return get_seasonal_pattern(scrip_code) if scrip_code else {}
+
+            def _trend():
+                return get_consecutive_trend(scrip_code) if scrip_code else {}
+
+            def _momentum():
+                return get_momentum_score(sym)
 
             coroutines = [
                 loop.run_in_executor(None, _price),
@@ -425,53 +455,57 @@ async def get_impact_batch(
             gathered = await asyncio.gather(*coroutines, return_exceptions=True)
 
             price_levels = gathered[0] if not isinstance(gathered[0], Exception) else {}
-            mmm          = gathered[1] if not isinstance(gathered[1], Exception) else {}
-            seasonal     = gathered[2] if not isinstance(gathered[2], Exception) else {}
-            trend        = gathered[3] if not isinstance(gathered[3], Exception) else {}
-            momentum     = gathered[4] if not isinstance(gathered[4], Exception) else {}
-            analyst_raw  = gathered[5] if not isinstance(gathered[5], Exception) else {}
-            news_raw     = gathered[6] if not isinstance(gathered[6], Exception) else {}
+            mmm = gathered[1] if not isinstance(gathered[1], Exception) else {}
+            seasonal = gathered[2] if not isinstance(gathered[2], Exception) else {}
+            trend = gathered[3] if not isinstance(gathered[3], Exception) else {}
+            momentum = gathered[4] if not isinstance(gathered[4], Exception) else {}
+            analyst_raw = gathered[5] if not isinstance(gathered[5], Exception) else {}
+            news_raw = gathered[6] if not isinstance(gathered[6], Exception) else {}
 
             # Normalize analyst (same logic as single endpoint)
             analyst: dict = {}
             if analyst_raw and not quick and isinstance(analyst_raw, dict):
-                analysis     = analyst_raw.get("analysis", {})
-                technical    = analysis.get("technical", {})
-                historical   = analysis.get("historical", {})
+                analysis = analyst_raw.get("analysis", {})
+                technical = analysis.get("technical", {})
+                historical = analysis.get("historical", {})
                 trading_plan = analysis.get("trading_plan", {})
                 analyst = {
                     "stock_info": analyst_raw.get("stock_info", {}),
                     "analysis": {
-                        "signal":           analysis.get("signal", momentum.get("signal", "HOLD")),
-                        "signal_strength":  analysis.get("signal_strength", ""),
-                        "overall_score":    analysis.get("overall_score", 0),
-                        "technical_score":  analysis.get("technical_score", "—"),
-                        "fundamental_score":analysis.get("fundamental_score", "—"),
+                        "signal": analysis.get(
+                            "signal", momentum.get("signal", "HOLD")
+                        ),
+                        "signal_strength": analysis.get("signal_strength", ""),
+                        "overall_score": analysis.get("overall_score", 0),
+                        "technical_score": analysis.get("technical_score", "—"),
+                        "fundamental_score": analysis.get("fundamental_score", "—"),
                         "historical_score": analysis.get("historical_score", "—"),
                         "technical": {
-                            "rsi":          technical.get("rsi", momentum.get("rsi", 50)),
-                            "macd_hist":    technical.get("macd_hist", 0.0),
-                            "adx":          technical.get("adx", 0.0),
+                            "rsi": technical.get("rsi", momentum.get("rsi", 50)),
+                            "macd_hist": technical.get("macd_hist", 0.0),
+                            "adx": technical.get("adx", 0.0),
                             "volume_ratio": technical.get("volume_ratio", 1.0),
-                            "bb_upper":     technical.get("bb_upper", 0.0),
-                            "bb_middle":    technical.get("bb_middle", 0.0),
-                            "bb_lower":     technical.get("bb_lower", 0.0),
+                            "bb_upper": technical.get("bb_upper", 0.0),
+                            "bb_middle": technical.get("bb_middle", 0.0),
+                            "bb_lower": technical.get("bb_lower", 0.0),
                         },
                         "historical": {
-                            "trend":             historical.get("trend", "FLAT"),
-                            "pct_from_52w_high": historical.get("pct_from_52w_high", 0.0),
-                            "volatility":        historical.get("volatility", 0.0),
-                            "supports":          historical.get("supports", []),
-                            "resistances":       historical.get("resistances", []),
+                            "trend": historical.get("trend", "FLAT"),
+                            "pct_from_52w_high": historical.get(
+                                "pct_from_52w_high", 0.0
+                            ),
+                            "volatility": historical.get("volatility", 0.0),
+                            "supports": historical.get("supports", []),
+                            "resistances": historical.get("resistances", []),
                         },
                         "trading_plan": {
-                            "buy_target_1":  trading_plan.get("buy_target_1", 0.0),
-                            "buy_target_2":  trading_plan.get("buy_target_2", 0.0),
+                            "buy_target_1": trading_plan.get("buy_target_1", 0.0),
+                            "buy_target_2": trading_plan.get("buy_target_2", 0.0),
                             "buy_stop_loss": trading_plan.get("buy_stop_loss", 0.0),
-                            "buy_triggers":  trading_plan.get("buy_triggers", []),
+                            "buy_triggers": trading_plan.get("buy_triggers", []),
                             "sell_target_1": trading_plan.get("sell_target_1", 0.0),
                             "sell_target_2": trading_plan.get("sell_target_2", 0.0),
-                            "sell_stop_loss":trading_plan.get("sell_stop_loss", 0.0),
+                            "sell_stop_loss": trading_plan.get("sell_stop_loss", 0.0),
                             "sell_triggers": trading_plan.get("sell_triggers", []),
                         },
                     },
@@ -480,13 +514,21 @@ async def get_impact_batch(
                 analyst = {
                     "stock_info": {},
                     "analysis": {
-                        "signal":           momentum.get("signal", "HOLD"),
-                        "signal_strength":  "",
-                        "overall_score":    0,
-                        "technical_score":  "—",
-                        "fundamental_score":"—",
+                        "signal": momentum.get("signal", "HOLD"),
+                        "signal_strength": "",
+                        "overall_score": 0,
+                        "technical_score": "—",
+                        "fundamental_score": "—",
                         "historical_score": "—",
-                        "technical": {"rsi": momentum.get("rsi", 50), "macd_hist": 0, "adx": 0, "volume_ratio": 1, "bb_upper": 0, "bb_middle": 0, "bb_lower": 0},
+                        "technical": {
+                            "rsi": momentum.get("rsi", 50),
+                            "macd_hist": 0,
+                            "adx": 0,
+                            "volume_ratio": 1,
+                            "bb_upper": 0,
+                            "bb_middle": 0,
+                            "bb_lower": 0,
+                        },
                         "historical": {},
                         "trading_plan": {},
                     },
@@ -494,7 +536,9 @@ async def get_impact_batch(
 
             news: dict = {}
             if news_raw and not quick and isinstance(news_raw, dict):
-                news = news_raw if isinstance(news_raw, dict) else {"articles": news_raw}
+                news = (
+                    news_raw if isinstance(news_raw, dict) else {"articles": news_raw}
+                )
             elif news_raw and not quick and isinstance(news_raw, list):
                 news = {"articles": news_raw}
 
@@ -508,16 +552,16 @@ async def get_impact_batch(
                     )
 
             return sym, {
-                "symbol":          sym,
-                "scrip_code":      scrip_code,
-                "price_levels":    price_levels,
-                "mmm":             mmm,
-                "trend":           trend,
-                "momentum":        momentum,
-                "analyst":         analyst,
-                "seasonal":        seasonal,
-                "corp_events":     corp_events,
-                "news":            news,
+                "symbol": sym,
+                "scrip_code": scrip_code,
+                "price_levels": price_levels,
+                "mmm": mmm,
+                "trend": trend,
+                "momentum": momentum,
+                "analyst": analyst,
+                "seasonal": seasonal,
+                "corp_events": corp_events,
+                "news": news,
                 "account_context": account_context,
             }
         except Exception as e:
@@ -543,6 +587,7 @@ async def get_impact_batch(
 # ─────────────────────────────────────────────────────────────────────────────
 # /suggest/batch  — suggestion for multiple symbols in one call
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @router.get("/suggest/batch")
 async def get_suggestion_batch(symbols: str, user_id: int = 0):
@@ -571,18 +616,19 @@ async def get_suggestion_batch(symbols: str, user_id: int = 0):
             if current_spot <= 0:
                 try:
                     import yfinance as yf
+
                     t = yf.Ticker(f"{sym}.NS")
                     current_spot = float(getattr(t.fast_info, "last_price", 0) or 0)
                 except Exception:
                     current_spot = 0.0
             result = get_suggestion(
-                symbol   = sym,
-                user_id  = user_id,
-                spot     = current_spot,
-                high_1m  = float(price_levels.get("high_1m",  0) or 0),
-                low_1m   = float(price_levels.get("low_1m",   0) or 0),
-                high_52w = float(price_levels.get("high_52w", 0) or 0),
-                low_52w  = float(price_levels.get("low_52w",  0) or 0),
+                symbol=sym,
+                user_id=user_id,
+                spot=current_spot,
+                high_1m=float(price_levels.get("high_1m", 0) or 0),
+                low_1m=float(price_levels.get("low_1m", 0) or 0),
+                high_52w=float(price_levels.get("high_52w", 0) or 0),
+                low_52w=float(price_levels.get("low_52w", 0) or 0),
             )
             result["spot"] = current_spot
             return result
@@ -612,6 +658,7 @@ def get_suggestion_endpoint(symbol: str, user_id: int = 0, spot: float = 0.0):
     if current_spot <= 0:
         try:
             import yfinance as yf
+
             t = yf.Ticker(f"{sym}.NS")
             current_spot = float(getattr(t.fast_info, "last_price", 0) or 0)
         except Exception:
@@ -629,13 +676,13 @@ def get_suggestion_endpoint(symbol: str, user_id: int = 0, spot: float = 0.0):
             pass
 
     result = get_suggestion(
-        symbol   = sym,
-        user_id  = user_id,
-        spot     = current_spot,
-        high_1m  = float(price_levels.get("high_1m",  0) or 0),
-        low_1m   = float(price_levels.get("low_1m",   0) or 0),
-        high_52w = float(price_levels.get("high_52w", 0) or 0),
-        low_52w  = float(price_levels.get("low_52w",  0) or 0),
+        symbol=sym,
+        user_id=user_id,
+        spot=current_spot,
+        high_1m=float(price_levels.get("high_1m", 0) or 0),
+        low_1m=float(price_levels.get("low_1m", 0) or 0),
+        high_52w=float(price_levels.get("high_52w", 0) or 0),
+        low_52w=float(price_levels.get("low_52w", 0) or 0),
     )
     result["spot"] = current_spot
     return result
@@ -644,6 +691,7 @@ def get_suggestion_endpoint(symbol: str, user_id: int = 0, spot: float = 0.0):
 # ─────────────────────────────────────────────────────────────────────────────
 # /holding-intel/{symbol}
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @router.get("/holding-intel/{symbol}")
 def holding_intel_endpoint(symbol: str, user_id: int = 0):
@@ -665,6 +713,7 @@ def holding_intel_endpoint(symbol: str, user_id: int = 0):
     if current_price <= 0:
         try:
             import yfinance as yf
+
             t = yf.Ticker(f"{sym}.NS")
             current_price = float(getattr(t.fast_info, "last_price", 0) or 0)
         except Exception:
@@ -678,6 +727,7 @@ def holding_intel_endpoint(symbol: str, user_id: int = 0):
 # ─────────────────────────────────────────────────────────────────────────────
 # /nse-search
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @router.get("/nse-search")
 def nse_search(q: str = ""):
@@ -707,12 +757,13 @@ def nse_search(q: str = ""):
                     LENGTH(symbol_root) ASC
                 LIMIT 15
             """),
-            {"q_prefix": f"{query}%", "q_exact": query}
+            {"q_prefix": f"{query}%", "q_exact": query},
         ).fetchall()
 
         # Also try contains search if prefix returned < 5 results
-        results = [{"symbol": r.symbol, "name": r.name, "exchange": r.exchange}
-                   for r in rows]
+        results = [
+            {"symbol": r.symbol, "name": r.name, "exchange": r.exchange} for r in rows
+        ]
 
         if len(results) < 5:
             rows2 = db.execute(
@@ -726,12 +777,14 @@ def nse_search(q: str = ""):
                     ORDER BY LENGTH(name) ASC
                     LIMIT 10
                 """),
-                {"q_contains": f"%{query}%"}
+                {"q_contains": f"%{query}%"},
             ).fetchall()
             seen = {r["symbol"] for r in results}
             for r in rows2:
                 if r.symbol not in seen:
-                    results.append({"symbol": r.symbol, "name": r.name, "exchange": r.exchange})
+                    results.append(
+                        {"symbol": r.symbol, "name": r.name, "exchange": r.exchange}
+                    )
                     seen.add(r.symbol)
 
         return results[:15]

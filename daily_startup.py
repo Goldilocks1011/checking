@@ -22,6 +22,7 @@ Key fixes vs previous version:
   • Path setup is robust whether run from project root or from backend/.
   • Dividend detection runs for every user and logs a summary.
 """
+
 from __future__ import annotations
 
 import sys
@@ -36,10 +37,10 @@ import logging
 #   backend/      (flat layout)             →  python daily_startup.py
 #   anywhere else with PYTHONPATH set
 
-_HERE    = os.path.dirname(os.path.abspath(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
 _BACKEND = os.path.join(_HERE, "backend")
 
-# Insert paths so imports like "from database import …" resolve correctly.
+# Insert paths so imports like "from backend.database import …" resolve correctly.
 # If running from within backend/ already, _BACKEND won't exist — that's fine.
 if os.path.isdir(_BACKEND):
     if _BACKEND not in sys.path:
@@ -53,7 +54,7 @@ else:
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 # API_BASE_URL is kept for optional HTTP-based steps but is NOT required.
-API_BASE_URL         = os.getenv("API_BASE_URL",        "http://localhost:8001/api/v1")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8001/api/v1")
 SCRIP_MASTER_TIMEOUT = int(os.getenv("SCRIP_MASTER_TIMEOUT", "300"))
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1 — Refresh 5paisa token
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def step1_token() -> None:
     logger.info("\n[1/5] Refreshing 5paisa token…")
@@ -76,7 +78,9 @@ def step1_token() -> None:
         if client:
             logger.info("     OK  Token saved to token_data.json")
         else:
-            logger.warning("     WARN  login_and_save() returned None — check credentials")
+            logger.warning(
+                "     WARN  login_and_save() returned None — check credentials"
+            )
     except Exception as e:
         logger.error("     FAIL  Token refresh: %s", e, exc_info=True)
 
@@ -85,16 +89,23 @@ def step1_token() -> None:
 # Step 2 — Download & UPSERT ScripMaster (DIRECT — no uvicorn needed)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def step2_scrip_master() -> None:
     logger.info("\n[2/5] Downloading ScripMaster (direct, no uvicorn needed)…")
 
     try:
         # Try to import the function from the correct module
-        from services.stock_master_service import download_and_upsert_scrip_master
+        from backend.services.stock_master_service import (
+            download_and_upsert_scrip_master,
+        )
+
         download_fn = download_and_upsert_scrip_master
     except ImportError:
         try:
-            from backend.services.stock_master_service import download_and_upsert_scrip_master
+            from backend.services.stock_master_service import (
+                download_and_upsert_scrip_master,
+            )
+
             download_fn = download_and_upsert_scrip_master
         except ImportError:
             download_fn = None
@@ -103,11 +114,16 @@ def step2_scrip_master() -> None:
         logger.info("     Using service function (direct DB upsert)…")
         result = download_fn()
         inserted = result.get("inserted", 0)
-        updated  = result.get("updated",  0)
-        errors   = result.get("errors",   0)
-        size     = result.get("download_size", "?")
-        logger.info("     OK  inserted=%d  updated=%d  errors=%d  size=%s",
-                    inserted, updated, errors, size)
+        updated = result.get("updated", 0)
+        errors = result.get("errors", 0)
+        size = result.get("download_size", "?")
+        logger.info(
+            "     OK  inserted=%d  updated=%d  errors=%d  size=%s",
+            inserted,
+            updated,
+            errors,
+            size,
+        )
         if errors > 0:
             logger.warning("     WARN  %d rows had errors (usually non-fatal)", errors)
         _verify_scrip_master_db()
@@ -117,8 +133,6 @@ def step2_scrip_master() -> None:
     logger.warning("     Service function not found — falling back to HTTP endpoint")
     _step2_via_api()
 
-   
-
 
 def _step2_via_api() -> None:
     """HTTP fallback — calls our own FastAPI endpoint (requires uvicorn running)."""
@@ -127,15 +141,22 @@ def _step2_via_api() -> None:
     url = f"{API_BASE_URL}/stock-master/download-from-5paisa"
     for attempt in range(1, 4):
         try:
-            logger.info("     HTTP %s (attempt %d, timeout=%ds)…", url, attempt, SCRIP_MASTER_TIMEOUT)
+            logger.info(
+                "     HTTP %s (attempt %d, timeout=%ds)…",
+                url,
+                attempt,
+                SCRIP_MASTER_TIMEOUT,
+            )
             resp = _req.post(url, timeout=SCRIP_MASTER_TIMEOUT)
             if resp.status_code == 200:
                 result = resp.json()
-                logger.info("     OK  %s | inserted=%d | errors=%d | size=%s",
-                            result.get("message", "Done"),
-                            result.get("inserted", 0),
-                            result.get("errors",   0),
-                            result.get("download_size", "?"))
+                logger.info(
+                    "     OK  %s | inserted=%d | errors=%d | size=%s",
+                    result.get("message", "Done"),
+                    result.get("inserted", 0),
+                    result.get("errors", 0),
+                    result.get("download_size", "?"),
+                )
                 _verify_scrip_master_db()
                 return
             else:
@@ -143,8 +164,10 @@ def _step2_via_api() -> None:
         except _req.exceptions.ConnectionError:
             logger.error("     FAIL  Cannot connect to %s — is uvicorn running?", url)
         except _req.exceptions.Timeout:
-            logger.error("     FAIL  Timeout (%ds) — try: export SCRIP_MASTER_TIMEOUT=600",
-                         SCRIP_MASTER_TIMEOUT)
+            logger.error(
+                "     FAIL  Timeout (%ds) — try: export SCRIP_MASTER_TIMEOUT=600",
+                SCRIP_MASTER_TIMEOUT,
+            )
         except Exception as e:
             logger.error("     FAIL  attempt %d: %s", attempt, e, exc_info=True)
 
@@ -161,25 +184,48 @@ def _verify_scrip_master_db() -> None:
         try:
             from backend.database import SessionLocal
         except ImportError:
-            from database import SessionLocal  # type: ignore
+            from backend.database import SessionLocal  # type: ignore
 
         from sqlalchemy import text
 
         db = SessionLocal()
         try:
-            total    = db.execute(text("SELECT COUNT(*) FROM scrip_master_cache")).scalar() or 0
-            nse_eq   = db.execute(text(
-                "SELECT COUNT(*) FROM scrip_master_cache WHERE exch='N' AND exch_type='C'"
-            )).scalar() or 0
-            nse_fno  = db.execute(text(
-                "SELECT COUNT(*) FROM scrip_master_cache WHERE exch='N' AND exch_type='D'"
-            )).scalar() or 0
-            with_isin = db.execute(text(
-                "SELECT COUNT(*) FROM scrip_master_cache "
-                "WHERE isin IS NOT NULL AND isin != '' AND exch='N' AND exch_type='C'"
-            )).scalar() or 0
-            logger.info("     DB  total=%d | NSE_EQ=%d | NSE_FNO=%d | with_isin=%d",
-                        total, nse_eq, nse_fno, with_isin)
+            total = (
+                db.execute(text("SELECT COUNT(*) FROM scrip_master_cache")).scalar()
+                or 0
+            )
+            nse_eq = (
+                db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM scrip_master_cache WHERE exch='N' AND exch_type='C'"
+                    )
+                ).scalar()
+                or 0
+            )
+            nse_fno = (
+                db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM scrip_master_cache WHERE exch='N' AND exch_type='D'"
+                    )
+                ).scalar()
+                or 0
+            )
+            with_isin = (
+                db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM scrip_master_cache "
+                        "WHERE isin IS NOT NULL AND isin != '' AND exch='N' AND exch_type='C'"
+                    )
+                ).scalar()
+                or 0
+            )
+            logger.info(
+                "     DB  total=%d | NSE_EQ=%d | NSE_FNO=%d | with_isin=%d",
+                total,
+                nse_eq,
+                nse_fno,
+                with_isin,
+            )
             if total < 50_000:
                 logger.warning("     WARN  Row count seems low — check upsert logs")
         finally:
@@ -192,23 +238,31 @@ def _verify_scrip_master_db() -> None:
 # Step 3 — Corporate actions for all canonical symbols
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def step3_corp_actions() -> None:
     logger.info("\n[3/5] Refreshing corporate actions…")
 
     try:
         from sqlalchemy import text
+
         try:
             from backend.database import SessionLocal
         except ImportError:
-            from database import SessionLocal  # type: ignore
+            from backend.database import SessionLocal  # type: ignore
 
         try:
             from backend.services.corp_actions_service import (
-                fetch_nse_corp_actions, _normalise_action_type, _extract_details, _norm_date,
+                fetch_nse_corp_actions,
+                _normalise_action_type,
+                _extract_details,
+                _norm_date,
             )
         except ImportError:
             from corp_actions_service import (  # type: ignore
-                fetch_nse_corp_actions, _normalise_action_type, _extract_details, _norm_date,
+                fetch_nse_corp_actions,
+                _normalise_action_type,
+                _extract_details,
+                _norm_date,
             )
 
     except Exception as e:
@@ -217,11 +271,15 @@ def step3_corp_actions() -> None:
 
     db = SessionLocal()
     try:
-        sym_rows = db.execute(text(
-            "SELECT DISTINCT canonical_symbol FROM stock_master_mapping "
-            "WHERE canonical_symbol IS NOT NULL AND canonical_symbol != ''"
-        )).fetchall()
-        symbols = [r.canonical_symbol.strip().upper() for r in sym_rows if r.canonical_symbol]
+        sym_rows = db.execute(
+            text(
+                "SELECT DISTINCT canonical_symbol FROM stock_master_mapping "
+                "WHERE canonical_symbol IS NOT NULL AND canonical_symbol != ''"
+            )
+        ).fetchall()
+        symbols = [
+            r.canonical_symbol.strip().upper() for r in sym_rows if r.canonical_symbol
+        ]
 
         if not symbols:
             logger.info("     No symbols in stock_master_mapping — skipping")
@@ -234,17 +292,20 @@ def step3_corp_actions() -> None:
             try:
                 from backend.services.nse_data_service import _get_session
             except ImportError:
-                from services.nse_data_service import _get_session  # type: ignore
+                from backend.services.nse_data_service import _get_session  # type: ignore
             session = _get_session()
         except Exception:
             # Fallback: build session ourselves (same as corp_actions_service._nse_session)
             import requests as _req
+
             session = _req.Session()
-            session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Referer": "https://www.nseindia.com/",
-            })
+            session.headers.update(
+                {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": "https://www.nseindia.com/",
+                }
+            )
             try:
                 session.get("https://www.nseindia.com/", timeout=10)
                 time.sleep(1)
@@ -264,10 +325,12 @@ def step3_corp_actions() -> None:
             if i % 25 == 0:
                 logger.info("     … %d/%d symbols fetched", i, len(symbols))
 
-        logger.info("     NSE fetch done — ok=%d  errors=%d", len(symbols) - failed, failed)
+        logger.info(
+            "     NSE fetch done — ok=%d  errors=%d", len(symbols) - failed, failed
+        )
 
         user_rows = db.execute(text("SELECT id FROM users")).fetchall()
-        user_ids  = [r.id for r in user_rows]
+        user_ids = [r.id for r in user_rows]
         if not user_ids:
             logger.info("     No users found — skipping DB write")
             return
@@ -285,12 +348,17 @@ def step3_corp_actions() -> None:
                     )
                     if not ex_date:
                         continue
-                    rec_date = _norm_date(r.get("recordDate") or r.get("record_date") or "")
-                    details  = _extract_details(purpose, action_type, str(r.get("faceVal") or ""))
-                    comp     = str(r.get("comp") or r.get("companyName") or sym)
-                    isin     = str(r.get("isin") or "")
+                    rec_date = _norm_date(
+                        r.get("recordDate") or r.get("record_date") or ""
+                    )
+                    details = _extract_details(
+                        purpose, action_type, str(r.get("faceVal") or "")
+                    )
+                    comp = str(r.get("comp") or r.get("companyName") or sym)
+                    isin = str(r.get("isin") or "")
                     try:
-                        db.execute(text("""
+                        db.execute(
+                            text("""
                             INSERT INTO corporate_actions
                               (user_id, symbol, isin, company_name, action_type,
                                ex_date, record_date, action_details, source, is_verified, notes)
@@ -303,18 +371,30 @@ def step3_corp_actions() -> None:
                               record_date    = COALESCE(NULLIF(VALUES(record_date),''), record_date),
                               action_details = VALUES(action_details),
                               updated_at     = NOW()
-                        """), {
-                            "uid": uid, "sym": sym, "isin": isin, "comp": comp,
-                            "act": action_type, "ex": ex_date, "rec": rec_date,
-                            "det": json.dumps(details), "purp": purpose,
-                        })
+                        """),
+                            {
+                                "uid": uid,
+                                "sym": sym,
+                                "isin": isin,
+                                "comp": comp,
+                                "act": action_type,
+                                "ex": ex_date,
+                                "rec": rec_date,
+                                "det": json.dumps(details),
+                                "purp": purpose,
+                            },
+                        )
                         upserted += 1
                     except Exception:
                         db.rollback()
 
         db.commit()
-        logger.info("     OK  %d symbols × %d users → %d rows upserted",
-                    len(symbols), len(user_ids), upserted)
+        logger.info(
+            "     OK  %d symbols × %d users → %d rows upserted",
+            len(symbols),
+            len(user_ids),
+            upserted,
+        )
 
     except Exception as e:
         db.rollback()
@@ -327,6 +407,7 @@ def step3_corp_actions() -> None:
 # Step 4 — Dividend adjustment detection for all users  (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def step4_dividend_detection() -> None:
     """
     Runs detect_pending_adjustments() for every user.
@@ -337,16 +418,19 @@ def step4_dividend_detection() -> None:
 
     try:
         from sqlalchemy import text
+
         try:
             from backend.database import SessionLocal
         except ImportError:
-            from database import SessionLocal  # type: ignore
+            from backend.database import SessionLocal  # type: ignore
 
         try:
-            from backend.services.fno_dividend_adjustment_service import detect_pending_adjustments
+            from backend.services.fno_dividend_adjustment_service import (
+                detect_pending_adjustments,
+            )
         except ImportError:
             try:
-                from services.fno_dividend_adjustment_service import detect_pending_adjustments  # type: ignore
+                from backend.services.fno_dividend_adjustment_service import detect_pending_adjustments  # type: ignore
             except ImportError:
                 from fno_dividend_adjustment_service import detect_pending_adjustments  # type: ignore
 
@@ -356,15 +440,16 @@ def step4_dividend_detection() -> None:
 
     try:
         from sqlalchemy import text
+
         try:
             from backend.database import SessionLocal
         except ImportError:
-            from database import SessionLocal  # type: ignore
+            from backend.database import SessionLocal  # type: ignore
 
         db = SessionLocal()
         try:
             user_rows = db.execute(text("SELECT id FROM users")).fetchall()
-            user_ids  = [r.id for r in user_rows]
+            user_ids = [r.id for r in user_rows]
         finally:
             db.close()
     except Exception as e:
@@ -379,6 +464,7 @@ def step4_dividend_detection() -> None:
     imminent = []  # adjustments with ex_date within 3 days
 
     import datetime
+
     today = datetime.date.today()
 
     for uid in user_ids:
@@ -390,7 +476,9 @@ def step4_dividend_detection() -> None:
                 logger.info("     user_id=%d  →  %d pending adjustment(s)", uid, n)
                 for adj in pending:
                     try:
-                        ex_dt = datetime.date.fromisoformat(str(adj.get("ex_date", ""))[:10])
+                        ex_dt = datetime.date.fromisoformat(
+                            str(adj.get("ex_date", ""))[:10]
+                        )
                         if 0 <= (ex_dt - today).days <= 3:
                             imminent.append((uid, adj))
                     except Exception:
@@ -423,15 +511,18 @@ def step4_dividend_detection() -> None:
 # Step 5 — Clear spot-price cache  (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def step5_clear_caches() -> None:
     """Clear module-level caches that should reset each trading day."""
     logger.info("\n[5/5] Clearing daily caches…")
     try:
         try:
-            from backend.services.fno_dividend_adjustment_service import clear_spot_cache
+            from backend.services.fno_dividend_adjustment_service import (
+                clear_spot_cache,
+            )
         except ImportError:
             try:
-                from services.fno_dividend_adjustment_service import clear_spot_cache  # type: ignore
+                from backend.services.fno_dividend_adjustment_service import clear_spot_cache  # type: ignore
             except ImportError:
                 from fno_dividend_adjustment_service import clear_spot_cache  # type: ignore
         clear_spot_cache()
@@ -460,16 +551,18 @@ def step5_clear_caches() -> None:
 # Diagnostics — python daily_startup.py --check
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def run_diagnostics() -> None:
     """Print DB state and unresolved symbols.  No writes."""
     logger.info("\n=== Diagnostic Check ===")
 
     try:
         from sqlalchemy import text
+
         try:
             from backend.database import SessionLocal
         except ImportError:
-            from database import SessionLocal  # type: ignore
+            from backend.database import SessionLocal  # type: ignore
     except Exception as e:
         logger.error("Cannot import DB: %s", e)
         return
@@ -477,9 +570,15 @@ def run_diagnostics() -> None:
     db = SessionLocal()
     try:
         tables = [
-            "scrip_master_cache", "stock_master_mapping", "unmatched_symbols",
-            "transactions", "holdings", "fno_transactions", "fno_synthetic_transactions",
-            "corporate_actions", "fno_dividend_adjustments",
+            "scrip_master_cache",
+            "stock_master_mapping",
+            "unmatched_symbols",
+            "transactions",
+            "holdings",
+            "fno_transactions",
+            "fno_synthetic_transactions",
+            "corporate_actions",
+            "fno_dividend_adjustments",
         ]
         logger.info("\nTable row counts:")
         for t in tables:
@@ -489,28 +588,36 @@ def run_diagnostics() -> None:
             except Exception:
                 logger.info("  %-40s  (missing)", t)
 
-        rows = db.execute(text(
-            "SELECT exch, exch_type, COUNT(*) as cnt FROM scrip_master_cache "
-            "GROUP BY exch, exch_type ORDER BY cnt DESC"
-        )).fetchall()
+        rows = db.execute(
+            text(
+                "SELECT exch, exch_type, COUNT(*) as cnt FROM scrip_master_cache "
+                "GROUP BY exch, exch_type ORDER BY cnt DESC"
+            )
+        ).fetchall()
         if rows:
             logger.info("\nScrip master breakdown:")
             for r in rows:
-                logger.info("  exch=%-3s exch_type=%-5s  %8d rows", r.exch, r.exch_type, r.cnt)
+                logger.info(
+                    "  exch=%-3s exch_type=%-5s  %8d rows", r.exch, r.exch_type, r.cnt
+                )
 
         # Dividend adjustments summary
-        adj_rows = db.execute(text(
-            "SELECT status, COUNT(*) as cnt FROM fno_dividend_adjustments GROUP BY status"
-        )).fetchall()
+        adj_rows = db.execute(
+            text(
+                "SELECT status, COUNT(*) as cnt FROM fno_dividend_adjustments GROUP BY status"
+            )
+        ).fetchall()
         if adj_rows:
             logger.info("\nDividend adjustments:")
             for r in adj_rows:
                 logger.info("  status=%-15s  %d", r.status, r.cnt)
 
-        unresolved = db.execute(text(
-            "SELECT raw_symbol, broker, qty FROM unmatched_symbols "
-            "WHERE resolved=0 ORDER BY qty DESC LIMIT 30"
-        )).fetchall()
+        unresolved = db.execute(
+            text(
+                "SELECT raw_symbol, broker, qty FROM unmatched_symbols "
+                "WHERE resolved=0 ORDER BY qty DESC LIMIT 30"
+            )
+        ).fetchall()
         if unresolved:
             logger.info("\nUnresolved symbols (%d shown):", len(unresolved))
             for r in unresolved:
@@ -537,7 +644,7 @@ if __name__ == "__main__":
         try:
             from backend.logging_config import setup_logging
         except ImportError:
-            from logging_config import setup_logging  # type: ignore
+            from backend.logging_config import setup_logging  # type: ignore
         setup_logging()
     except Exception:
         logging.basicConfig(
@@ -550,10 +657,12 @@ if __name__ == "__main__":
         sys.exit(0)
 
     logger.info("=" * 60)
-    logger.info("daily_startup.py  %s", _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info(
+        "daily_startup.py  %s", _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
     logger.info("=" * 60)
 
-    step5_clear_caches()   # clear stale caches first
+    step5_clear_caches()  # clear stale caches first
     step1_token()
     step2_scrip_master()
     step3_corp_actions()

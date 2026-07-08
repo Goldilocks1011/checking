@@ -1,8 +1,8 @@
 import io, json, re, time, requests
 from datetime import datetime
 from sqlalchemy import text
-from database import SessionLocal
-from models import CorporateAction
+from backend.database import SessionLocal
+from backend.models import CorporateAction
 from typing import Optional
 
 # ---------- NSE fetch helpers (same as old corporate_actions.py) ----------

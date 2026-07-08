@@ -1,5 +1,5 @@
 from sqlalchemy import Boolean, DateTime, ForeignKey, Column, Integer, String, Float, DateTime, func, Text, UniqueConstraint
-from database import Base
+from backend.database import Base
 from sqlalchemy import LargeBinary, Index, UniqueConstraint
 
 

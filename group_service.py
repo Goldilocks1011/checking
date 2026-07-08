@@ -1,6 +1,6 @@
 
 from sqlalchemy import text
-from database import SessionLocal
+from backend.database import SessionLocal
 
 def create_group(name: str, account_id: int) -> dict:
     db = SessionLocal()

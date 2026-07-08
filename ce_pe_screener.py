@@ -1,12 +1,23 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from database import SessionLocal
-from services.ce_pe_service import get_ce_pe_screener, get_advanced_options_screener, get_group_advanced_options_screener
+from backend.database import SessionLocal
+from backend.services.ce_pe_service import (
+    get_ce_pe_screener,
+    get_advanced_options_screener,
+    get_group_advanced_options_screener,
+)
 import asyncio
+
 try:
-    from services.covered_call_service import get_covered_call_analysis, get_master_reference_positions
+    from backend.services.covered_call_service import (
+        get_covered_call_analysis,
+        get_master_reference_positions,
+    )
 except ImportError:
-    from services.covered_call_service import get_covered_call_analysis, get_master_reference_positions
+    from backend.services.covered_call_service import (
+        get_covered_call_analysis,
+        get_master_reference_positions,
+    )
 
 router = APIRouter(tags=["CE/PE Screener"])
 
@@ -76,7 +87,9 @@ async def covered_call_analysis(user_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/master-reference-positions/{requesting_account_id}")
-async def master_reference_positions(requesting_account_id: int, db: Session = Depends(get_db)):
+async def master_reference_positions(
+    requesting_account_id: int, db: Session = Depends(get_db)
+):
     """
     For child accounts (account_id > master).
     Returns Account 1 (master) positions that are NOT covered calls there —
@@ -84,7 +97,9 @@ async def master_reference_positions(requesting_account_id: int, db: Session = D
     Runs in a background thread.
     """
     try:
-        data = await asyncio.to_thread(get_master_reference_positions, requesting_account_id)
+        data = await asyncio.to_thread(
+            get_master_reference_positions, requesting_account_id
+        )
         return {"status": "success", "data": data}
     except Exception as e:
         return {"status": "error", "message": str(e)}

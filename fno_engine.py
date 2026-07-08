@@ -8,8 +8,8 @@ Changes vs original:
 """
 import io
 from sqlalchemy import text
-from database import SessionLocal
-from models import FnoTransaction, FnoOpenPosition, FnoPnl, ProcessedFile
+from backend.database import SessionLocal
+from backend.models import FnoTransaction, FnoOpenPosition, FnoPnl, ProcessedFile
 from sqlalchemy.exc import IntegrityError
 from collections import defaultdict
 from datetime import datetime
@@ -25,14 +25,14 @@ def process_fno_file(uploaded_file, user_id: int, broker: str, original_filename
     # ----- 1. Parse -----
     try:
         if broker == "5paisa":
-            from parsers.fivepaisa_fno import parse as f_parse
+            from backend.parsers.fivepaisa_fno import parse as f_parse
             txns     = f_parse(io.BytesIO(file_bytes), broker)
             open_pos = []
         elif broker == "IIFL":
-            from parsers.iifl_fno import parse as i_parse
+            from backend.parsers.iifl_fno import parse as i_parse
             txns, open_pos = i_parse(io.BytesIO(file_bytes), broker)
         elif broker == "Zerodha":
-            from parsers.zerodha_fno import parse as z_parse
+            from backend.parsers.zerodha_fno import parse as z_parse
             txns, open_pos = z_parse(io.BytesIO(file_bytes), broker)
         else:
             return {"status": "error", "message": f"Unknown broker: {broker}"}
@@ -132,7 +132,7 @@ def process_fno_file(uploaded_file, user_id: int, broker: str, original_filename
         # ----- 3. NEW: Backfill past pending adjustments before P&L rebuild -----
         backfill_summary = {"auto_applied": 0, "user_uploaded": 0}
         try:
-            from services.fno_dividend_adjustment_service import backfill_past_adjustments
+            from backend.services.fno_dividend_adjustment_service import backfill_past_adjustments
             backfill_summary = backfill_past_adjustments(user_id, db)
             logger.info(
                 f"[FNO Upload] Backfill result for user {user_id}: "
@@ -145,7 +145,7 @@ def process_fno_file(uploaded_file, user_id: int, broker: str, original_filename
 
         # ----- 4. Rebuild F&O P&L (with synthetic merge) ----------------------
         try:
-            from services.fno_dividend_adjustment_service import rebuild_fno_pnl_with_synthetic
+            from backend.services.fno_dividend_adjustment_service import rebuild_fno_pnl_with_synthetic
             rebuild_fno_pnl_with_synthetic(user_id, db)
         except Exception as rb_err:
             logger.error(f"[FNO Upload] rebuild_fno_pnl_with_synthetic failed: {rb_err}", exc_info=True)

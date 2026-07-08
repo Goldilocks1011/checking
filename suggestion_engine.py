@@ -19,26 +19,28 @@ Output shape:
 
 from __future__ import annotations
 from sqlalchemy import text
-from database import SessionLocal
+from backend.database import SessionLocal
 from datetime import datetime, timedelta
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 # ⭐ NEW IMPORTS for 4-condition check
 try:
-    from services.ce_pe_service import get_price_ohlc
+    from backend.services.ce_pe_service import get_price_ohlc
 except ImportError:
     get_price_ohlc = None
 
 try:
-    from services.analysis_service import get_seasonal_pattern
+    from backend.services.analysis_service import get_seasonal_pattern
 except ImportError:
     get_seasonal_pattern = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ⭐ NEW: 4-Condition Check Helpers for SELL_CE Eligibility
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _check_profit_condition_wl(avg_buy_price: float, spot: float) -> dict:
     """
@@ -51,9 +53,9 @@ def _check_profit_condition_wl(avg_buy_price: float, spot: float) -> dict:
             "message": "Cannot determine profit (missing price data)",
             "profit_pct": 0.0,
         }
-    
+
     profit_pct = ((spot - avg_buy_price) / avg_buy_price) * 100
-    
+
     if profit_pct > 0:
         return {
             "status": "✅",
@@ -79,9 +81,9 @@ def _check_market_condition_wl(spot: float, high_52w: float) -> dict:
             "message": "Cannot determine 52W high",
             "pct_to_52w": 0.0,
         }
-    
+
     pct_to_high = ((high_52w - spot) / high_52w) * 100
-    
+
     if pct_to_high <= 5:  # Within 5% of 52W high
         return {
             "status": "✅",
@@ -102,24 +104,34 @@ def _check_seasonal_condition_wl(symbol: str) -> dict:
     Is current month BEST/WORST/NEUTRAL seasonally?
     """
     if not get_seasonal_pattern:
-        return {"status": "✅", "message": "Seasonal check unavailable. Proceed.", "season_rank": "neutral"}
-    
+        return {
+            "status": "✅",
+            "message": "Seasonal check unavailable. Proceed.",
+            "season_rank": "neutral",
+        }
+
     try:
         db = SessionLocal()
         try:
             row = db.execute(
-                text("SELECT scrip_code FROM scrip_master_cache WHERE UPPER(symbol_root) = :sym AND scrip_code IS NOT NULL LIMIT 1"),
-                {"sym": symbol.upper()}
+                text(
+                    "SELECT scrip_code FROM scrip_master_cache WHERE UPPER(symbol_root) = :sym AND scrip_code IS NOT NULL LIMIT 1"
+                ),
+                {"sym": symbol.upper()},
             ).first()
-            
+
             if not row or not row.scrip_code:
-                return {"status": "✅", "message": "Seasonal data unavailable. Proceed.", "season_rank": "neutral"}
-            
+                return {
+                    "status": "✅",
+                    "message": "Seasonal data unavailable. Proceed.",
+                    "season_rank": "neutral",
+                }
+
             seasonal = get_seasonal_pattern(int(row.scrip_code))
             rank = seasonal.get("current_month_rank", "neutral")
             best_month = seasonal.get("best_month", "")
             worst_month = seasonal.get("worst_month", "")
-            
+
             if rank == "best":
                 return {
                     "status": "⏸️",
@@ -142,7 +154,11 @@ def _check_seasonal_condition_wl(symbol: str) -> dict:
             db.close()
     except Exception as e:
         logger.debug(f"[Seasonal] Error for {symbol}: {e}")
-        return {"status": "✅", "message": "Seasonal check skipped. Proceed.", "season_rank": "neutral"}
+        return {
+            "status": "✅",
+            "message": "Seasonal check skipped. Proceed.",
+            "season_rank": "neutral",
+        }
 
 
 def _check_lot_size_condition_wl(symbol: str, eq_qty: float = 0) -> dict:
@@ -164,7 +180,7 @@ def _check_lot_size_condition_wl(symbol: str, eq_qty: float = 0) -> dict:
                 """),
                 {"sym": symbol.upper()},
             ).fetchall()
-            
+
             if not rows or not rows[0].lot_size or rows[0].lot_size <= 0:
                 return {
                     "status": "⚠️",
@@ -172,10 +188,10 @@ def _check_lot_size_condition_wl(symbol: str, eq_qty: float = 0) -> dict:
                     "lot_size": 0,
                     "qty": int(eq_qty),
                 }
-            
+
             lot_size = int(rows[0].lot_size)
             qty_available = int(eq_qty)
-            
+
             # Check lot completeness
             if qty_available >= lot_size:
                 complete_lots = qty_available // lot_size
@@ -213,7 +229,7 @@ def _evaluate_sell_ce_conditions_wl(
 ) -> dict:
     """
     MAIN EVALUATION: Combines all 4 conditions for SELL_CE
-    
+
     Returns:
       {
         "verdict": "✅ READY" | "⚠️ AVOID" | "⏸️ WAIT",
@@ -229,10 +245,10 @@ def _evaluate_sell_ce_conditions_wl(
     market_check = _check_market_condition_wl(spot, high_52w)
     seasonal_check = _check_seasonal_condition_wl(symbol)
     lot_check = _check_lot_size_condition_wl(symbol, eq_qty)
-    
+
     all_checks = [profit_check, market_check, seasonal_check, lot_check]
     pass_count = sum(1 for c in all_checks if c.get("status", "").startswith("✅"))
-    
+
     # Decision logic
     if lot_check.get("status", "").startswith("⚠️"):
         verdict = "⚠️ AVOID"
@@ -242,7 +258,9 @@ def _evaluate_sell_ce_conditions_wl(
         detail = f"Holding in loss. Wait for recovery to break-even."
     elif seasonal_check.get("status", "").startswith("⏸️"):
         verdict = "⏸️ WAIT"
-        detail = seasonal_check.get("message", "Seasonal conditions not favorable right now")
+        detail = seasonal_check.get(
+            "message", "Seasonal conditions not favorable right now"
+        )
     elif pass_count == 4:
         verdict = "✅ READY"
         detail = "All 4 conditions favorable. Write covered call now."
@@ -252,7 +270,7 @@ def _evaluate_sell_ce_conditions_wl(
     else:
         verdict = "⚠️ AVOID"
         detail = "Multiple unfavorable conditions. Do not write CE."
-    
+
     return {
         "verdict": verdict,
         "detail": detail,
@@ -379,7 +397,7 @@ def _select_strike_expiry(symbol: str, spot: float, signal_type: str) -> dict:
                 continue
             if itype == "PE" and strike >= spot:
                 continue
-            
+
             # ... rest of your existing logic remains exactly the same ...
 
             # Skip strikes too far OTM (more than 10% from spot)
@@ -411,29 +429,31 @@ def _select_strike_expiry(symbol: str, spot: float, signal_type: str) -> dict:
 
         return {}
     except Exception as e:
-        logger.error(f"[SuggestionEngine] _select_strike_expiry error: {e}", exc_info=True)
+        logger.error(
+            f"[SuggestionEngine] _select_strike_expiry error: {e}", exc_info=True
+        )
         return {}
     finally:
         db.close()
 
 
 def get_suggestion(
-    symbol:    str,
-    user_id:   int,
-    spot:      float = 0.0,
-    high_1m:   float = 0.0,
-    low_1m:    float = 0.0,
-    high_52w:  float = 0.0,
-    low_52w:   float = 0.0,
+    symbol: str,
+    user_id: int,
+    spot: float = 0.0,
+    high_1m: float = 0.0,
+    low_1m: float = 0.0,
+    high_52w: float = 0.0,
+    low_52w: float = 0.0,
 ) -> dict:
-    flags:  list[str] = []
-    signal: str       = "NEUTRAL"
-    reason: str       = ""
-    strike: float | None     = None
-    expiry: str | None       = None
-    breakeven: float | None  = None
-    confidence: str          = "LOW"
-    conditions: dict | None  = None  # ⭐ NEW
+    flags: list[str] = []
+    signal: str = "NEUTRAL"
+    reason: str = ""
+    strike: float | None = None
+    expiry: str | None = None
+    breakeven: float | None = None
+    confidence: str = "LOW"
+    conditions: dict | None = None  # ⭐ NEW
 
     # ── Module 3: Account Router check ───────────────────────────────────────
     account_role = "master"
@@ -441,6 +461,7 @@ def get_suggestion(
     if user_id:
         try:
             from backend.services.account_router import get_account_role_and_master
+
             account_role, master_user_id = get_account_role_and_master(user_id)
         except Exception as e:
             logger.error(f"[SuggestionEngine] account_router error: {e}", exc_info=True)
@@ -449,6 +470,7 @@ def get_suggestion(
     if account_role == "child" and master_user_id:
         try:
             from backend.services.account_router import get_master_open_ce_symbols
+
             master_ce_symbols = get_master_open_ce_symbols(master_user_id)
             if symbol.upper() in master_ce_symbols:
                 flags.append("master_has_ce")
@@ -467,7 +489,9 @@ def get_suggestion(
                     "conditions": None,
                 }
         except Exception as e:
-            logger.error(f"[SuggestionEngine] master CE check error: {e}", exc_info=True)
+            logger.error(
+                f"[SuggestionEngine] master CE check error: {e}", exc_info=True
+            )
 
     corp_event = _has_corp_event_soon(symbol)
     # ... rest of function continues
@@ -552,7 +576,7 @@ def get_suggestion(
                 signal = "SELL_CE"
                 reason = f"Spot near 1M high (₹{high_1m:,.0f}). Holding in profit — write covered call"
                 confidence = "HIGH"
-                
+
                 # ⭐ NEW: Add 4-condition check for SELL_CE
                 eq_qty = float(holding.get("quantity", 0))
                 conditions = _evaluate_sell_ce_conditions_wl(
@@ -560,10 +584,10 @@ def get_suggestion(
                     avg_buy_price=float(holding["avg_buy_price"]),
                     spot=spot,
                     high_52w=high_52w if high_52w > 0 else spot + 5000,
-                    eq_qty=eq_qty
+                    eq_qty=eq_qty,
                 )
                 flags.append(f"ce_conditions_{conditions.get('pass_count', 0)}_pass")
-                
+
             else:
                 signal = "SELL_CE"
                 reason = f"Spot near 1M high — overbought signal"
@@ -588,7 +612,9 @@ def get_suggestion(
             else:
                 # ✅ ADD THIS ELSE BLOCK TO FIX THE BUG
                 signal = "NEUTRAL"
-                reason = f"Stock near 1M low, but no F&O contracts available for {symbol}."
+                reason = (
+                    f"Stock near 1M low, but no F&O contracts available for {symbol}."
+                )
                 confidence = "LOW"
         # 52W context flags (informational only)
         if high_52w > 0 and spot >= (high_52w * 0.95):
@@ -609,7 +635,7 @@ def get_suggestion(
         "confidence": confidence,
         "flags": flags,
     }
-    
+
     # ⭐ NEW: Add conditions to result if evaluated
     if conditions:
         result["conditions"] = {
@@ -620,5 +646,5 @@ def get_suggestion(
         }
         result["condition_verdict"] = conditions.get("verdict")
         result["condition_detail"] = conditions.get("detail")
-    
+
     return result

@@ -2,8 +2,8 @@ import bcrypt
 import secrets
 from datetime import datetime, timedelta
 from jose import jwt
-from database import SessionLocal
-from models import Account, PasswordReset
+from backend.database import SessionLocal
+from backend.models import Account, PasswordReset
 
 SECRET_KEY = "your-secret-key-change-me"   # change this in production
 ALGORITHM = "HS256"

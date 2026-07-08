@@ -482,6 +482,7 @@ Fixes vs v1:
   - get_fno_info_from_nse() now uses scrip_master_cache DB first so lot
     sizes are correct instead of returning 500 for everything
 """
+
 from __future__ import annotations
 
 import time
@@ -546,7 +547,9 @@ def _nse_get(url: str, retries: int = 2, pause: float = 0.6) -> dict | list | No
             if resp.status_code == 200:
                 return resp.json()
             if resp.status_code in (429, 503, 403):
-                logger.warning(f"[NSE] {resp.status_code} on {url} — refreshing session (attempt {attempt+1})")
+                logger.warning(
+                    f"[NSE] {resp.status_code} on {url} — refreshing session (attempt {attempt+1})"
+                )
                 _get_session(force_new=True)
                 time.sleep(pause * (attempt + 1))
                 continue
@@ -580,18 +583,19 @@ def _load_derivative_master() -> dict:
     try:
         data = _nse_get(
             "https://www.nseindia.com/api/derivative-master?type=futures",
-            retries=2, pause=1.0
+            retries=2,
+            pause=1.0,
         )
         if data and isinstance(data, dict):
             for item in data.get("data", []):
                 sym = item.get("symbol", "").strip().upper()
-                ls  = item.get("lotSize", 0)
+                ls = item.get("lotSize", 0)
                 if sym and ls and int(ls) > 1:
                     master[sym] = {"fno": True, "lot_size": int(ls)}
         elif data and isinstance(data, list):
             for item in data:
                 sym = item.get("symbol", "").strip().upper()
-                ls  = item.get("lotSize", 0)
+                ls = item.get("lotSize", 0)
                 if sym and ls and int(ls) > 1:
                     master[sym] = {"fno": True, "lot_size": int(ls)}
     except Exception as e:
@@ -602,17 +606,21 @@ def _load_derivative_master() -> dict:
         try:
             data = _nse_get(
                 "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O",
-                retries=1, pause=1.0
+                retries=1,
+                pause=1.0,
             )
             if data and isinstance(data, dict):
                 for item in data.get("data", []):
                     sym = item.get("symbol", "").strip().upper()
                     if sym:
-                        master[sym] = {"fno": True, "lot_size": 0}  # lot_size unknown from this endpoint
+                        master[sym] = {
+                            "fno": True,
+                            "lot_size": 0,
+                        }  # lot_size unknown from this endpoint
         except Exception:
             pass
 
-    _derivative_master      = master
+    _derivative_master = master
     _derivative_master_time = now
     return master
 
@@ -631,7 +639,8 @@ def get_fno_info_from_nse(symbol: str) -> tuple[bool, int]:
 
     # ── 1. DB (ScripMaster cache) ─────────────────────────────────────────────
     try:
-        from services.scrip_master_db import is_db_populated, query_fno_info
+        from backend.services.scrip_master_db import is_db_populated, query_fno_info
+
         if is_db_populated():
             fno, lot = query_fno_info(sym)
             if fno and lot > 1:
@@ -641,7 +650,7 @@ def get_fno_info_from_nse(symbol: str) -> tuple[bool, int]:
 
     # ── 2. NSE derivative master ──────────────────────────────────────────────
     master = _load_derivative_master()
-    info   = master.get(sym)
+    info = master.get(sym)
     if info:
         lot = info["lot_size"]
         return True, lot if lot > 1 else 500  # 500 only when NSE gives 0
@@ -651,11 +660,12 @@ def get_fno_info_from_nse(symbol: str) -> tuple[bool, int]:
 
 def clear_derivative_cache():
     global _derivative_master, _derivative_master_time
-    _derivative_master      = None
+    _derivative_master = None
     _derivative_master_time = None
 
 
 # ── ISIN & Quote ──────────────────────────────────────────────────────────────
+
 
 def fetch_isin_from_nse(symbol: str) -> str | None:
     """Get ISIN for an NSE symbol via quote API."""

@@ -14,26 +14,27 @@ Resolution order in get_canonical() is unchanged:
   3. ISIN lookup via isin_resolver (DB-only)
   4. Return symbol as-is (safe fallback)
 """
+
 from __future__ import annotations
 
 import re
 import logging
 
 from sqlalchemy import text
-from database import SessionLocal
+from backend.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 # ── Module-level cache ────────────────────────────────────────────────────────
 _cache: dict[str, str] | None = None
-_nse_cache: dict[str, str] = {}  
+_nse_cache: dict[str, str] = {}
 _SUFFIX_STRIP = re.compile(r"(_EQ|-EQ|_NSE|-NSE|_BSE|-BSE)$", re.IGNORECASE)
 try:
-    from services.nse_data_service import search_nse_symbol, fetch_quote_full
+    from backend.services.nse_data_service import search_nse_symbol, fetch_quote_full
 except ImportError:
     search_nse_symbol = None
     fetch_quote_full = None
-    
+
 # Strip common noisy suffix words from company names
 _STRIP = re.compile(
     r"\s+(LTD\.?|LIMITED|PVT\.?|CORP\.?|INDUSTRIES|HOLDINGS?|FINANCE|FINANCIAL|"
@@ -46,12 +47,14 @@ _RE_SUFFIX = re.compile(r"(_RE|-RE)$", re.IGNORECASE)
 # Cache builder  (DB-only)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _build_cache() -> dict[str, str]:
     cache: dict[str, str] = {}
 
     # Source 1: scrip_master_cache — symbol_root / name / full_name for NSE EQ rows
     try:
-        from services.scrip_master_db import is_db_populated
+        from backend.services.scrip_master_db import is_db_populated
+
         if is_db_populated():
             db = SessionLocal()
             try:
@@ -63,9 +66,9 @@ def _build_cache() -> dict[str, str]:
                     LIMIT 100000
                 """)).fetchall()
                 for r in rows:
-                    sr   = str(r.symbol_root or "").strip().upper()
-                    name = str(r.name        or "").strip().upper()
-                    full = str(r.full_name   or "").strip().upper()
+                    sr = str(r.symbol_root or "").strip().upper()
+                    name = str(r.name or "").strip().upper()
+                    full = str(r.full_name or "").strip().upper()
                     if not sr or sr in ("NAN", ""):
                         continue
                     for key in (sr, name, full):
@@ -83,17 +86,19 @@ def _build_cache() -> dict[str, str]:
     try:
         db = SessionLocal()
         rows = db.execute(
-            text("SELECT standard_name, canonical_symbol FROM stock_master_mapping "
-                 "WHERE canonical_symbol IS NOT NULL AND canonical_symbol != ''")
+            text(
+                "SELECT standard_name, canonical_symbol FROM stock_master_mapping "
+                "WHERE canonical_symbol IS NOT NULL AND canonical_symbol != ''"
+            )
         ).fetchall()
         db.close()
 
         for r in rows:
             can = str(r.canonical_symbol or "").strip().upper()
-            std = str(r.standard_name    or "").strip().upper()
+            std = str(r.standard_name or "").strip().upper()
             if can and can not in ("NAN", "—", ""):
                 cache[std] = can
-                cache[can] = can   # self-mapping
+                cache[can] = can  # self-mapping
                 stripped = _STRIP.sub("", std).strip()
                 if stripped:
                     cache[stripped] = can
@@ -122,6 +127,7 @@ def _ensure_cache() -> dict[str, str]:
 # Public resolution function  (safe — no prefix scan)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _try_nse_resolve(symbol: str) -> str | None:
     """
     Query NSE autocomplete + quote to find canonical symbol.
@@ -138,12 +144,15 @@ def _try_nse_resolve(symbol: str) -> str | None:
         return _nse_cache[sym]
     # Check DB cache (symbol_normalisation table)
     try:
-        from database import SessionLocal
+        from backend.database import SessionLocal
         from sqlalchemy import text
+
         db = SessionLocal()
         row = db.execute(
-            text("SELECT canonical_symbol FROM symbol_normalisation WHERE raw_symbol = :sym"),
-            {"sym": sym}
+            text(
+                "SELECT canonical_symbol FROM symbol_normalisation WHERE raw_symbol = :sym"
+            ),
+            {"sym": sym},
         ).first()
         db.close()
         if row and row.canonical_symbol:
@@ -158,7 +167,8 @@ def _try_nse_resolve(symbol: str) -> str | None:
             return None
         # Prefer equity symbols
         candidates = [
-            r for r in results
+            r
+            for r in results
             if r.get("symbol_type", "").upper() in ("", "EQUITY", "EQ")
         ] or results
         # Take first match and fetch its canonical symbol via quote
@@ -180,7 +190,7 @@ def _try_nse_resolve(symbol: str) -> str | None:
                             VALUES (:raw, :canon, 'nse')
                             ON DUPLICATE KEY UPDATE canonical_symbol = :canon, source = 'nse'
                         """),
-                        {"raw": sym, "canon": canon}
+                        {"raw": sym, "canon": canon},
                     )
                     db.commit()
                     db.close()
@@ -190,6 +200,7 @@ def _try_nse_resolve(symbol: str) -> str | None:
     except Exception:
         pass
     return None
+
 
 def get_canonical(symbol: str) -> str:
     if not symbol:
@@ -219,11 +230,11 @@ def get_canonical(symbol: str) -> str:
             cache[sym] = cache[base_stripped]
             return cache[base_stripped]
         # Fall through to further steps with base? We'll continue with original sym below.
-   
+
     # 4. ISIN lookup (existing + now also try on base and base_stripped)
     try:
-        from services.isin_resolver import resolve_isin, isin_to_canonical
-        
+        from backend.services.isin_resolver import resolve_isin, isin_to_canonical
+
         # Try original symbol
         isin = resolve_isin(sym)
         if isin:
@@ -273,14 +284,16 @@ def get_canonical(symbol: str) -> str:
     cache[sym] = clean
     return clean
 
+
 # ── Backward-compatible aliases ───────────────────────────────────────────────
 _normalise = get_canonical
-normalise  = get_canonical
+normalise = get_canonical
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Batch helper
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def get_canonical_batch(symbols) -> dict[str, str]:
     """Resolve a list/Series of symbols → {raw: canonical} dict."""
@@ -291,12 +304,13 @@ def get_canonical_batch(symbols) -> dict[str, str]:
 # Debug helper
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def debug_resolve(symbol: str) -> None:
     """
     logger.info step-by-step resolution trace.
-    Usage: from services.symbol_resolver import debug_resolve; debug_resolve("BAJAJ AUTO")
+    Usage: from backend.services.symbol_resolver import debug_resolve; debug_resolve("BAJAJ AUTO")
     """
-    sym   = str(symbol).strip().upper()
+    sym = str(symbol).strip().upper()
     cache = _ensure_cache()
 
     logger.info(f"\n=== Resolution trace for '{symbol}' ===")
@@ -311,7 +325,8 @@ def debug_resolve(symbol: str) -> None:
         return
 
     try:
-        from services.isin_resolver import resolve_isin, isin_to_canonical
+        from backend.services.isin_resolver import resolve_isin, isin_to_canonical
+
         isin = resolve_isin(sym)
         logger.info(f"  Step 3 ISIN lookup → '{isin}'")
         if isin:

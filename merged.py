@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from typing import List
-from database import SessionLocal
+from backend.database import SessionLocal
 from sqlalchemy.orm import Session
 import asyncio
 

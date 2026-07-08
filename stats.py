@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from database import SessionLocal
+from backend.database import SessionLocal
 import asyncio
 
 router = APIRouter(tags=["Stats"])
