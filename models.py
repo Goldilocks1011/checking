@@ -406,3 +406,14 @@ class FnoSyntheticTransaction(Base):
     source           = Column(String(50),  default="SYNTHETIC_ADJUSTMENT")
     notes            = Column(Text,    nullable=True)
     created_at       = Column(DateTime, server_default=func.now())
+    
+class BrokerHolding(Base):
+    __tablename__ = "broker_holdings"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    broker = Column(String(20), nullable=False)  # "Zerodha", "5paisa", "IIFL"
+    symbol = Column(String(100), nullable=False)
+    isin = Column(String(20))
+    quantity = Column(Float, nullable=False)
+    avg_buy_price = Column(Float, default=0.0)
+    uploaded_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

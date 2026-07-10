@@ -42,6 +42,7 @@ from backend.models import (
     FnoDividendAdjustment,
     FnoSyntheticTransaction,
 )
+from backend.routers import holdings_reconciliation_router
 from backend.routers import (
     prices,
     stats,
@@ -98,7 +99,7 @@ app.include_router(impact_router, prefix="/api/v1")
 app.include_router(fno_adjustments.router, prefix="/api/v1")
 app.include_router(fno_stale_positions.router, prefix="/api/v1")
 app.include_router(task_status_router.router, prefix="/api/v1")
-
+app.include_router(holdings_reconciliation_router.router, prefix="/api/v1")
 
 @app.get("/")
 def root():

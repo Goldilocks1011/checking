@@ -713,3 +713,51 @@ def get_task_status(user_id: int, task_name: str = None) -> dict:
         return resp.json()
     except Exception:
         return {"status": "idle"}
+    
+# Add at end of file:
+def upload_holdings(file, user_id: int, broker: str) -> dict:
+    """Upload broker holdings file for reconciliation."""
+    files = {"file": (file.name, file.getvalue())}
+    data = {"user_id": user_id, "broker": broker}
+    resp = requests.post(
+        f"{API_BASE}/holdings/reconcile/upload",
+        files=files, data=data,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+def apply_holdings_corrections(user_id: int, corrections: str) -> dict:
+    """Apply user-confirmed corrections."""
+    resp = requests.post(
+        f"{API_BASE}/holdings/reconcile/apply",
+        data={"user_id": user_id, "corrections": corrections},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+
+
+def upload_holdings_reconcile(file, user_id: int, broker: str) -> dict:
+    """Upload broker holdings file for reconciliation"""
+    files = {"file": (file.name, file.getvalue())}
+    data = {"user_id": user_id, "broker": broker}
+    resp = requests.post(
+        f"{API_BASE}/holdings/reconcile/upload",
+        files=files, data=data,
+        headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+    return resp.json()
+
+def apply_holdings_corrections(user_id: int, corrections) -> dict:
+    """Apply user-confirmed corrections"""
+    import json
+    corr_str = json.dumps(corrections) if isinstance(corrections, list) else corrections
+    resp = requests.post(
+        f"{API_BASE}/holdings/reconcile/apply",
+        data={"user_id": user_id, "corrections": corr_str},
+        headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+    return resp.json()

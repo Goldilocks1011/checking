@@ -1,5 +1,9 @@
 import sys
 import os
+from holdings_reconciliation_ui import (
+    render_holdings_upload_section,
+    render_reconciliation_results
+)
 # Add the backend folder to Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import math  
@@ -31,7 +35,7 @@ from api_client import (
     clear_wishlist_all, get_pending_adjustments_stored,
         detect_pending_adjustments, fetch_prices_with_change,
         apply_fno_adjustment, fetch_prices_with_change,
-        skip_fno_adjustment,
+        skip_fno_adjustment, upload_holdings_reconcile, apply_holdings_corrections,
         get_adjustment_history,
 )
 from backend.services.engine import (
@@ -954,6 +958,12 @@ else:
                             st.session_state.pop(f"pfiles_{_uid}", None)
                             st.rerun()
 
+                    with st.expander("🏦 Holdings Upload (for Reconciliation)"):
+                        render_holdings_upload_section(
+                            user_id=selected_user["id"],
+                            token=st.session_state.token
+                        )
+                            
                     st.divider()
                     st.subheader("✏️ Manual Entry")
                     entry_type = st.radio("Type", ["Equity", "F&O"], horizontal=True, key="manual_type")
@@ -1284,7 +1294,22 @@ else:
                                             st.info("No corporate actions applied yet.")
                                     except Exception as e:
                                         st.error(f"Failed to load event log: {e}")
-
+                    # 👈 NEW: Reconciliation Result UI (interactive diff tables)
+   # ── Holdings Reconciliation Results ────────────────────────
+                    st.divider()
+                    if st.session_state.get("last_reconciliation_diff"):
+                        render_reconciliation_results(
+                            user_id=_uid,
+                            token=st.session_state.token,
+                            diff=st.session_state.last_reconciliation_diff
+                        )
+                        st.markdown("---")
+                    else:
+                        st.info(
+                            "💡 **No holdings reconciliation yet.** "
+                            "Upload a broker holdings file in the **Upload & Manage** tab to compare."
+                        )
+                    
                     st.divider()
                     with st.expander("✏️ Rename a Stock (Custom Name)"):
                         all_rows = st.session_state.get("sm_grid_data") or []
@@ -1430,7 +1455,12 @@ else:
                                 except Exception as e:
                                     st.error(str(e))
 
-                # ── Tab 3: Transactions ────────────────────────────────────────
+                # with tab2b:
+                #     render_holdings_reconciliation_tab(
+                #         user_id=selected_user["id"],
+                #         token=st.session_state.token,
+                #     )
+                # # ── Tab 3: Transactions ────────────────────────────────────────
                 with tab3:
                     st.subheader("All Transactions")
                     if st.button("Refresh Transactions", key="txn_refresh_btn"):
@@ -2785,3 +2815,5 @@ else:
 
             else:
                 st.info("Select a user from the sidebar or create a new one.")
+                
+                
